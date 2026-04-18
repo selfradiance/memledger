@@ -10,6 +10,17 @@ function summarizeHistory(claimId: string, ledger: ReturnType<typeof createTestL
   }));
 }
 
+function summarizeOutcomes(
+  claimId: string,
+  ledger: ReturnType<typeof createTestLedger>["ledger"]
+) {
+  return ledger.getClaimHistory(claimId).outcomes.map((outcome) => ({
+    eventType: outcome.eventType,
+    claimId: outcome.claimId,
+    relatedClaimId: outcome.relatedClaimId
+  }));
+}
+
 describe("ledger", () => {
   it("adds claims and appends a claim_added event", () => {
     const { ledger, close } = createTestLedger();
@@ -91,6 +102,148 @@ describe("ledger", () => {
     }
   });
 
+  it("records an outcome row and updates current confidence", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      const result = ledger.recordOutcome({
+        claimId: claim.id,
+        eventType: "observed_hold",
+        source: "operator",
+        notes: "Held when checked."
+      });
+
+      const history = ledger.getClaimHistory(claim.id);
+
+      expect(result.outcome.eventType).toBe("observed_hold");
+      expect(result.claim.currentConfidence).toBe(0.44);
+      expect(history.outcomes).toHaveLength(1);
+      expect(history.outcomes[0]?.notes).toBe("Held when checked.");
+    } finally {
+      close();
+    }
+  });
+
+  it("rejects recording an outcome for a nonexistent claim", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      expect(() =>
+        ledger.recordOutcome({
+          claimId: "missing",
+          eventType: "observed_fail",
+          source: "operator"
+        })
+      ).toThrowError("Claim missing was not found.");
+    } finally {
+      close();
+    }
+  });
+
+  it("rejects manual superseded outcomes outside structural supersedeClaim", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      expect(() =>
+        ledger.recordOutcome({
+          claimId: claim.id,
+          eventType: "superseded" as never,
+          source: "operator",
+          relatedClaimId: "clm_9999"
+        })
+      ).toThrowError(/invalid option/i);
+    } finally {
+      close();
+    }
+  });
+
+  it("supports manual_correction without related claim linkage", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const result = ledger.recordOutcome({
+        claimId: claim.id,
+        eventType: "manual_correction",
+        source: "human.review",
+        notes: "Operator corrected this."
+      });
+
+      expect(result.outcome.relatedClaimId).toBeNull();
+      expect(result.claim.currentConfidence).toBe(0.52);
+    } finally {
+      close();
+    }
+  });
+
+  it("handles mixed hold and fail outcomes deterministically", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.6
+      });
+
+      ledger.recordOutcome({
+        claimId: claim.id,
+        eventType: "observed_hold",
+        source: "operator"
+      });
+      ledger.recordOutcome({
+        claimId: claim.id,
+        eventType: "observed_fail",
+        source: "operator"
+      });
+      ledger.recordOutcome({
+        claimId: claim.id,
+        eventType: "observed_hold",
+        source: "operator"
+      });
+
+      const refreshed = ledger.getClaim(claim.id);
+
+      expect(refreshed?.currentConfidence).toBe(0.56);
+      expect(ledger.getClaim(claim.id)?.currentConfidence).toBe(0.56);
+    } finally {
+      close();
+    }
+  });
+
   it("supersedes a claim by creating a new claim and a supersede event", () => {
     const { ledger, close } = createTestLedger();
 
@@ -118,11 +271,16 @@ describe("ledger", () => {
 
       const originalAfter = ledger.getClaim(original.id);
       const newClaim = ledger.getClaim(result.newClaim.id);
+      const originalHistory = ledger.getClaimHistory(original.id);
 
       expect(result.event.eventType).toBe("claim_superseded");
       expect(originalAfter?.supersededByClaimId).toBe(result.newClaim.id);
+      expect(originalAfter?.currentConfidence).toBe(0.25);
       expect(newClaim?.supersedesClaimId).toBe(original.id);
       expect(newClaim?.object).toBe("soy milk");
+      expect(originalHistory.outcomes.map((outcome) => outcome.eventType)).toEqual([
+        "superseded"
+      ]);
     } finally {
       close();
     }
@@ -183,6 +341,16 @@ describe("ledger", () => {
           relatedClaimId: claimB.id
         }
       ]);
+
+      expect(summarizeOutcomes(claimA.id, ledger)).toEqual([
+        {
+          eventType: "superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        }
+      ]);
+
+      expect(summarizeOutcomes(claimB.id, ledger)).toEqual([]);
     } finally {
       close();
     }
@@ -297,12 +465,30 @@ describe("ledger", () => {
           relatedClaimId: claimC.id
         }
       ]);
+
+      expect(summarizeOutcomes(claimA.id, ledger)).toEqual([
+        {
+          eventType: "superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        }
+      ]);
+
+      expect(summarizeOutcomes(claimB.id, ledger)).toEqual([
+        {
+          eventType: "superseded",
+          claimId: claimB.id,
+          relatedClaimId: claimC.id
+        }
+      ]);
+
+      expect(summarizeOutcomes(claimC.id, ledger)).toEqual([]);
     } finally {
       close();
     }
   });
 
-  it("rejects superseding the same claim twice in v0.1", () => {
+  it("rejects superseding the same claim twice in v0.2", () => {
     const { ledger, close } = createTestLedger();
 
     try {

@@ -4,6 +4,7 @@ import {
   addClaimInputSchema,
   claimStateSchema,
   contestClaimInputSchema,
+  recordOutcomeInputSchema,
   supersedeClaimInputSchema
 } from "../src/schema.js";
 
@@ -80,9 +81,31 @@ describe("schema", () => {
       },
       contested: false,
       contestCount: 0,
-      supersededByClaimId: null
+      supersededByClaimId: null,
+      currentConfidence: 0.7
     });
 
     expect(parsed.outcomeTracking.status).toBe("stub");
+  });
+
+  it("rejects manual superseded outcomes in recordOutcome input", () => {
+    expect(() =>
+      recordOutcomeInputSchema.parse({
+        claimId: "clm_1",
+        eventType: "superseded",
+        source: "agent.alpha",
+        relatedClaimId: "clm_2"
+      })
+    ).toThrowError(/invalid option/i);
+  });
+
+  it("rejects an invalid outcome event type", () => {
+    expect(() =>
+      recordOutcomeInputSchema.parse({
+        claimId: "clm_1",
+        eventType: "not_real",
+        source: "agent.alpha"
+      })
+    ).toThrowError(/invalid option/i);
   });
 });

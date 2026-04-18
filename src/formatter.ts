@@ -1,4 +1,10 @@
-import type { ClaimHistory, ClaimParts, ClaimState, LedgerEvent } from "./types.js";
+import type {
+  ClaimHistory,
+  ClaimParts,
+  ClaimState,
+  LedgerEvent,
+  MemoryOutcome
+} from "./types.js";
 
 export function formatClaimStatement(claim: ClaimParts): string {
   return `${claim.subject} ${claim.predicate} ${claim.object}`;
@@ -39,9 +45,9 @@ export function formatClaim(claim: ClaimState): string {
     `  author: ${claim.author}`,
     `  session: ${claim.sessionId}`,
     `  trigger: ${claim.trigger}`,
-    `  confidence: ${claim.confidence.toFixed(2)}`,
+    `  baseConfidence: ${claim.confidence.toFixed(2)}`,
+    `  currentConfidence: ${claim.currentConfidence.toFixed(2)}`,
     `  created: ${claim.createdAt}`,
-    `  outcomeTracking: ${claim.outcomeTracking.status}`,
     links.length > 0 ? `  links: ${links.join(" ")}` : null
   ]
     .filter((line): line is string => line !== null)
@@ -79,9 +85,11 @@ export function formatEvent(event: LedgerEvent): string {
 }
 
 export function formatClaimHistory(history: ClaimHistory): string {
-  return [formatClaim(history.claim), "Events:", formatHistoryLines(history.events)].join(
-    "\n"
-  );
+  return [
+    formatClaim(history.claim),
+    "Local Events:",
+    formatHistoryLines(history.events)
+  ].join("\n");
 }
 
 export function formatLedgerHistory(events: LedgerEvent[]): string {
@@ -92,10 +100,37 @@ export function formatLedgerHistory(events: LedgerEvent[]): string {
   return formatHistoryLines(events);
 }
 
+export function formatMemoryOutcome(outcome: MemoryOutcome): string {
+  const relatedClaim = outcome.relatedClaimId
+    ? ` relatedClaim=${outcome.relatedClaimId}`
+    : "";
+  const notes = outcome.notes ? ` notes="${outcome.notes}"` : "";
+
+  return `${outcome.createdAt} ${outcome.eventType} claim=${outcome.claimId} source=${outcome.source}${relatedClaim}${notes}`;
+}
+
+export function formatClaimReport(history: ClaimHistory): string {
+  return [
+    formatClaim(history.claim),
+    "Local Events:",
+    formatHistoryLines(history.events),
+    "Outcomes:",
+    formatOutcomeLines(history.outcomes)
+  ].join("\n");
+}
+
 function formatHistoryLines(events: LedgerEvent[]): string {
   if (events.length === 0) {
     return "  (none)";
   }
 
   return events.map((event) => `  - ${formatEvent(event)}`).join("\n");
+}
+
+function formatOutcomeLines(outcomes: MemoryOutcome[]): string {
+  if (outcomes.length === 0) {
+    return "  (none)";
+  }
+
+  return outcomes.map((outcome) => `  - ${formatMemoryOutcome(outcome)}`).join("\n");
 }

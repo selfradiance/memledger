@@ -3,13 +3,16 @@ import { z } from "zod";
 import {
   CLAIM_STATUS_FILTERS,
   CLAIM_TRIGGERS,
-  EVENT_TYPES
+  EVENT_TYPES,
+  MANUAL_MEMORY_OUTCOME_EVENT_TYPES,
+  MEMORY_OUTCOME_EVENT_TYPES
 } from "./types.js";
 
 const trimmedText = z.string().trim().min(1);
 
 export const idSchema = trimmedText.max(128);
 export const actorSchema = trimmedText.max(128);
+export const sourceSchema = trimmedText.max(128);
 export const sessionIdSchema = trimmedText.max(128);
 export const reasonSchema = trimmedText.max(500);
 export const nullableReasonSchema = z.union([reasonSchema, z.null()]);
@@ -17,6 +20,10 @@ export const isoTimestampSchema = z.string().datetime({ offset: true });
 export const confidenceSchema = z.number().finite().min(0).max(1);
 export const claimTriggerSchema = z.enum(CLAIM_TRIGGERS);
 export const eventTypeSchema = z.enum(EVENT_TYPES);
+export const memoryOutcomeEventTypeSchema = z.enum(MEMORY_OUTCOME_EVENT_TYPES);
+export const manualMemoryOutcomeEventTypeSchema = z.enum(
+  MANUAL_MEMORY_OUTCOME_EVENT_TYPES
+);
 export const claimStatusFilterSchema = z.enum(CLAIM_STATUS_FILTERS);
 
 export const claimPartsSchema = z.object({
@@ -44,7 +51,8 @@ export const claimRecordSchema = claimPartsSchema.extend({
 export const claimStateSchema = claimRecordSchema.extend({
   contested: z.boolean(),
   contestCount: z.number().int().min(0),
-  supersededByClaimId: z.union([idSchema, z.null()])
+  supersededByClaimId: z.union([idSchema, z.null()]),
+  currentConfidence: confidenceSchema
 });
 
 export const claimAddedPayloadSchema = z.object({
@@ -107,6 +115,14 @@ export const supersedeClaimInputSchema = claimPartsSchema.extend({
   reason: z.union([reasonSchema, z.null()]).optional()
 });
 
+export const recordOutcomeInputSchema = z.object({
+  claimId: idSchema,
+  eventType: manualMemoryOutcomeEventTypeSchema,
+  source: sourceSchema,
+  notes: z.union([reasonSchema, z.null()]).optional(),
+  relatedClaimId: z.union([idSchema, z.null()]).optional()
+});
+
 export const listClaimsOptionsSchema = z.object({
   status: claimStatusFilterSchema.default("all")
 });
@@ -141,4 +157,24 @@ export const eventRowSchema = z.object({
   note: z.union([reasonSchema, z.null()]),
   related_claim_id: z.union([idSchema, z.null()]),
   payload_json: z.string().min(2)
+});
+
+export const memoryOutcomeSchema = z.object({
+  id: idSchema,
+  claimId: idSchema,
+  eventType: memoryOutcomeEventTypeSchema,
+  source: sourceSchema,
+  notes: z.union([reasonSchema, z.null()]),
+  relatedClaimId: z.union([idSchema, z.null()]),
+  createdAt: isoTimestampSchema
+});
+
+export const memoryOutcomeRowSchema = z.object({
+  id: idSchema,
+  claim_id: idSchema,
+  event_type: memoryOutcomeEventTypeSchema,
+  source: sourceSchema,
+  notes: z.union([reasonSchema, z.null()]),
+  related_claim_id: z.union([idSchema, z.null()]),
+  created_at: isoTimestampSchema
 });

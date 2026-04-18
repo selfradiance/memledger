@@ -15,6 +15,25 @@ export const EVENT_TYPES = [
 
 export type EventType = (typeof EVENT_TYPES)[number];
 
+export const MEMORY_OUTCOME_EVENT_TYPES = [
+  "observed_hold",
+  "observed_fail",
+  "superseded",
+  "manual_correction"
+] as const;
+
+export type MemoryOutcomeEventType =
+  (typeof MEMORY_OUTCOME_EVENT_TYPES)[number];
+
+export const MANUAL_MEMORY_OUTCOME_EVENT_TYPES = [
+  "observed_hold",
+  "observed_fail",
+  "manual_correction"
+] as const;
+
+export type ManualMemoryOutcomeEventType =
+  (typeof MANUAL_MEMORY_OUTCOME_EVENT_TYPES)[number];
+
 export const CLAIM_STATUS_FILTERS = [
   "all",
   "active",
@@ -50,6 +69,7 @@ export interface ClaimState extends ClaimRecord {
   contested: boolean;
   contestCount: number;
   supersededByClaimId: string | null;
+  currentConfidence: number;
 }
 
 export interface ClaimAddedPayload {
@@ -115,7 +135,26 @@ export interface ListClaimsOptions {
   status?: ClaimStatusFilter;
 }
 
+export interface MemoryOutcome {
+  id: string;
+  claimId: string;
+  eventType: MemoryOutcomeEventType;
+  source: string;
+  notes: string | null;
+  relatedClaimId: string | null;
+  createdAt: string;
+}
+
+export interface RecordOutcomeInput {
+  claimId: string;
+  eventType: ManualMemoryOutcomeEventType;
+  source: string;
+  notes?: string | null;
+  relatedClaimId?: string | null;
+}
+
 export interface ClaimHistory {
   claim: ClaimState;
   events: LedgerEvent[];
+  outcomes: MemoryOutcome[];
 }

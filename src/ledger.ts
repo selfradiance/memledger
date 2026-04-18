@@ -11,9 +11,13 @@ import {
   ledgerEventPayloadSchema,
   ledgerEventSchema,
   listClaimsOptionsSchema,
+  memoryOutcomeRowSchema,
+  memoryOutcomeSchema,
   outcomeTrackingStubSchema,
+  recordOutcomeInputSchema,
   supersedeClaimInputSchema
 } from "./schema.js";
+import { recalculateCurrentConfidence } from "./confidence.js";
 import type {
   AddClaimInput,
   ClaimHistory,
@@ -21,12 +25,14 @@ import type {
   LedgerEvent,
   LedgerEventPayload,
   ListClaimsOptions,
+  MemoryOutcome,
+  RecordOutcomeInput,
   SupersedeClaimInput
 } from "./types.js";
 
 export interface LedgerDependencies {
   now?: () => string;
-  createId?: (prefix: "clm" | "evt") => string;
+  createId?: (prefix: "clm" | "evt" | "out") => string;
 }
 
 type SqliteDatabase = BetterSqliteDatabase;
@@ -60,17 +66,27 @@ interface EventRow {
   payload_json: string;
 }
 
+interface MemoryOutcomeRow {
+  id: string;
+  claim_id: string;
+  event_type: MemoryOutcome["eventType"];
+  source: string;
+  notes: string | null;
+  related_claim_id: string | null;
+  created_at: string;
+}
+
 export class MemLedger {
   private readonly db: SqliteDatabase;
   private readonly now: () => string;
-  private readonly createId: (prefix: "clm" | "evt") => string;
+  private readonly createId: (prefix: "clm" | "evt" | "out") => string;
 
   constructor(db: SqliteDatabase, dependencies: LedgerDependencies = {}) {
     this.db = db;
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.createId =
       dependencies.createId ??
-      ((prefix: "clm" | "evt") => `${prefix}_${randomUUID()}`);
+      ((prefix: "clm" | "evt" | "out") => `${prefix}_${randomUUID()}`);
   }
 
   addClaim(input: AddClaimInput): ClaimState {
@@ -252,6 +268,42 @@ export class MemLedger {
     })();
   }
 
+  recordOutcome(
+    input: RecordOutcomeInput
+  ): { claim: ClaimState; outcome: MemoryOutcome } {
+    const parsed = recordOutcomeInputSchema.parse(input);
+
+    return this.db.transaction(() => {
+      this.requireClaimState(parsed.claimId);
+
+      if (parsed.relatedClaimId !== undefined && parsed.relatedClaimId !== null) {
+        this.requireClaimState(parsed.relatedClaimId);
+      }
+
+      if (parsed.relatedClaimId === parsed.claimId) {
+        throw new Error("relatedClaimId must be different from claimId.");
+      }
+
+      const outcomeId = this.createId("out");
+      const createdAt = this.now();
+
+      this.insertOutcome({
+        id: outcomeId,
+        claimId: parsed.claimId,
+        eventType: parsed.eventType,
+        source: parsed.source,
+        notes: parsed.notes ?? null,
+        relatedClaimId: parsed.relatedClaimId ?? null,
+        createdAt
+      });
+
+      return {
+        claim: this.requireClaimState(parsed.claimId),
+        outcome: this.requireOutcome(outcomeId)
+      };
+    })();
+  }
+
   supersedeClaim(
     input: SupersedeClaimInput
   ): { previousClaim: ClaimState; newClaim: ClaimState; event: LedgerEvent } {
@@ -269,6 +321,7 @@ export class MemLedger {
       const newClaimId = this.createId("clm");
       const addEventId = this.createId("evt");
       const supersedeEventId = this.createId("evt");
+      const supersedeOutcomeId = this.createId("out");
       const createdAt = this.now();
       const reason = parsed.reason ?? null;
 
@@ -357,6 +410,16 @@ export class MemLedger {
         }
       });
 
+      this.insertOutcome({
+        id: supersedeOutcomeId,
+        claimId: previousClaim.id,
+        eventType: "superseded",
+        source: parsed.author,
+        notes: reason,
+        relatedClaimId: newClaimId,
+        createdAt
+      });
+
       return {
         previousClaim: this.requireClaimState(previousClaim.id),
         newClaim: this.requireClaimState(newClaimId),
@@ -395,7 +458,8 @@ export class MemLedger {
 
     return {
       claim,
-      events: rows.map((row) => this.mapEventRow(row))
+      events: rows.map((row) => this.mapEventRow(row)),
+      outcomes: this.listOutcomesForClaim(claimId)
     };
   }
 
@@ -530,6 +594,48 @@ export class MemLedger {
       });
   }
 
+  private insertOutcome(outcome: {
+    id: string;
+    claimId: string;
+    eventType: MemoryOutcome["eventType"];
+    source: string;
+    notes: string | null;
+    relatedClaimId: string | null;
+    createdAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `
+          INSERT INTO memory_outcomes (
+            id,
+            claim_id,
+            event_type,
+            source,
+            notes,
+            related_claim_id,
+            created_at
+          ) VALUES (
+            @id,
+            @claim_id,
+            @event_type,
+            @source,
+            @notes,
+            @related_claim_id,
+            @created_at
+          )
+        `
+      )
+      .run({
+        id: outcome.id,
+        claim_id: outcome.claimId,
+        event_type: outcome.eventType,
+        source: outcome.source,
+        notes: outcome.notes,
+        related_claim_id: outcome.relatedClaimId,
+        created_at: outcome.createdAt
+      });
+  }
+
   private requireEvent(eventId: string): LedgerEvent {
     const row = this.db
       .prepare(
@@ -557,11 +663,59 @@ export class MemLedger {
     return this.mapEventRow(row);
   }
 
+  private requireOutcome(outcomeId: string): MemoryOutcome {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            claim_id,
+            event_type,
+            source,
+            notes,
+            related_claim_id,
+            created_at
+          FROM memory_outcomes
+          WHERE id = ?
+        `
+      )
+      .get(outcomeId) as MemoryOutcomeRow | undefined;
+
+    if (!row) {
+      throw new Error(`Outcome ${outcomeId} was not found.`);
+    }
+
+    return this.mapOutcomeRow(row);
+  }
+
+  private listOutcomesForClaim(claimId: string): MemoryOutcome[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            claim_id,
+            event_type,
+            source,
+            notes,
+            related_claim_id,
+            created_at
+          FROM memory_outcomes
+          WHERE claim_id = ?
+          ORDER BY created_at ASC, id ASC
+        `
+      )
+      .all(claimId) as MemoryOutcomeRow[];
+
+    return rows.map((row) => this.mapOutcomeRow(row));
+  }
+
   private mapClaimStateRow(row: unknown): ClaimState {
     const parsedRow = claimStateRowSchema.parse(row);
     const outcomeTracking = outcomeTrackingStubSchema.parse(
       JSON.parse(parsedRow.outcome_stub_json)
     );
+    const outcomes = this.listOutcomesForClaim(parsedRow.id);
 
     return claimStateSchema.parse({
       id: parsedRow.id,
@@ -577,7 +731,11 @@ export class MemLedger {
       outcomeTracking,
       contested: parsedRow.contested === 1,
       contestCount: parsedRow.contest_count,
-      supersededByClaimId: parsedRow.superseded_by_claim_id
+      supersededByClaimId: parsedRow.superseded_by_claim_id,
+      currentConfidence: recalculateCurrentConfidence(
+        parsedRow.confidence,
+        outcomes
+      )
     });
   }
 
@@ -603,6 +761,20 @@ export class MemLedger {
       note: parsedRow.note,
       relatedClaimId: parsedRow.related_claim_id,
       payload
+    });
+  }
+
+  private mapOutcomeRow(row: unknown): MemoryOutcome {
+    const parsedRow = memoryOutcomeRowSchema.parse(row);
+
+    return memoryOutcomeSchema.parse({
+      id: parsedRow.id,
+      claimId: parsedRow.claim_id,
+      eventType: parsedRow.event_type,
+      source: parsedRow.source,
+      notes: parsedRow.notes,
+      relatedClaimId: parsedRow.related_claim_id,
+      createdAt: parsedRow.created_at
     });
   }
 }

@@ -4,18 +4,21 @@ This repo is deliberately narrow. Keep it that way unless the user explicitly ex
 
 ## Product Boundaries
 
-- MemLedger v0.1 is a CLI proof of concept for structured, append-only memory claims.
-- Do not add LLM features, web UI, AgentGate integration, retrieval systems, embeddings, vector search, auditor agents, or reliability scoring.
-- Outcome tracking may exist only as a stub until a future v0.2.
+- MemLedger v0.2 is a local CLI for structured, append-only memory claims plus explicit outcome logging.
+- Do not add LLM features, web UI, AgentGate integration, retrieval systems, embeddings, vector search, auditor agents, autonomous review loops, causal attribution, blame logic, or per-author reliability scoring.
+- v0.2 is only about outcome logging and deterministic confidence recalculation from logged outcomes.
 
 ## Design Rules
 
 - Claims are structured records, not free-form memory blobs.
 - Claim rows are append-only.
 - Event rows are immutable.
+- Outcome rows are immutable.
 - Existing claim text must never be edited in place.
 - Corrections must create new claims that supersede older ones.
+- Manual outcome logging must not create `superseded` outcomes; structural supersession remains the source of truth.
 - Every mutation must append an event.
+- Current confidence must be derivable from stored claim data plus logged outcomes.
 
 ## Engineering Style
 
@@ -28,4 +31,4 @@ This repo is deliberately narrow. Keep it that way unless the user explicitly ex
 ## Testing Expectations
 
 - Preserve coverage for schema validation, DB append-only guarantees, ledger behavior, and CLI edge cases.
-- When changing mutation behavior, verify both the claim lineage and the immutable event log.
+- When changing mutation behavior, verify claim lineage, direct outcome history, and the immutable event log.

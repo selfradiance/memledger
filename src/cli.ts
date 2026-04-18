@@ -4,19 +4,30 @@ import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db.js";
 import {
   formatClaim,
+  formatClaimReport,
   formatClaimHistory,
   formatClaimList,
   formatEvent,
-  formatLedgerHistory
+  formatLedgerHistory,
+  formatMemoryOutcome
 } from "./formatter.js";
 import { MemLedger } from "./ledger.js";
 import {
   claimStatusFilterSchema,
   claimTriggerSchema,
-  confidenceSchema
+  confidenceSchema,
+  manualMemoryOutcomeEventTypeSchema
 } from "./schema.js";
-import { CLAIM_STATUS_FILTERS, CLAIM_TRIGGERS } from "./types.js";
-import type { ClaimStatusFilter, ClaimTrigger } from "./types.js";
+import {
+  CLAIM_STATUS_FILTERS,
+  CLAIM_TRIGGERS,
+  MANUAL_MEMORY_OUTCOME_EVENT_TYPES
+} from "./types.js";
+import type {
+  ClaimStatusFilter,
+  ClaimTrigger,
+  ManualMemoryOutcomeEventType
+} from "./types.js";
 
 export interface CliIo {
   stdout: (message: string) => void;
@@ -32,6 +43,7 @@ export interface CliDependencies {
       | "listClaims"
       | "contestClaim"
       | "supersedeClaim"
+      | "recordOutcome"
       | "getClaimHistory"
       | "getLedgerHistory"
     >;
@@ -73,6 +85,16 @@ const COMMAND_OPTIONS = {
     "db",
     "help"
   ]),
+  "record-outcome": new Set([
+    "id",
+    "event-type",
+    "source",
+    "notes",
+    "related-claim-id",
+    "db",
+    "help"
+  ]),
+  "show-claim": new Set(["id", "db", "help"]),
   history: new Set(["id", "db", "help"]),
   help: new Set<string>()
 } as const;
@@ -187,6 +209,34 @@ export function runCli(
             result.newClaim
           )}\n`
         );
+        return 0;
+      }
+
+      case "record-outcome": {
+        const result = handle.ledger.recordOutcome({
+          claimId: requireOption(parsed.options, "id"),
+          eventType: parseOutcomeEventType(
+            requireOption(parsed.options, "event-type")
+          ),
+          source: requireOption(parsed.options, "source"),
+          notes: getOptionalString(parsed.options, "notes") ?? null,
+          relatedClaimId:
+            getOptionalString(parsed.options, "related-claim-id") ?? null
+        });
+
+        io.stdout(
+          `recorded ${result.outcome.id} for ${result.claim.id}\n${formatMemoryOutcome(
+            result.outcome
+          )}\ncurrentConfidence=${result.claim.currentConfidence.toFixed(2)}\n`
+        );
+        return 0;
+      }
+
+      case "show-claim": {
+        const history = handle.ledger.getClaimHistory(
+          requireOption(parsed.options, "id")
+        );
+        io.stdout(`${formatClaimReport(history)}\n`);
         return 0;
       }
 
@@ -325,6 +375,18 @@ function parseTrigger(raw: string): ClaimTrigger {
   return parsed.data;
 }
 
+function parseOutcomeEventType(raw: string): ManualMemoryOutcomeEventType {
+  const parsed = manualMemoryOutcomeEventTypeSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid event type "${raw}". Expected one of: ${MANUAL_MEMORY_OUTCOME_EVENT_TYPES.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
+}
+
 function parseStatus(raw: string | boolean | undefined): ClaimStatusFilter {
   if (raw === undefined) {
     return "all";
@@ -393,13 +455,15 @@ function resolveDatabasePath(raw: string | boolean | undefined): string {
 
 function usageText(): string {
   return [
-    "MemLedger v0.1",
+    "MemLedger v0.2",
     "",
     "Usage:",
     "  memledger add --subject <text> --predicate <text> --object <text> --author <id> --session <id> --trigger <task_completion|correction|assumption|inference> --confidence <0..1> [--db <path>]",
     "  memledger list [--status <all|active|contested|superseded>] [--db <path>]",
     "  memledger contest --id <claim_id> --actor <id> --session <id> --reason <text> [--db <path>]",
     "  memledger supersede --id <claim_id> --subject <text> --predicate <text> --object <text> --author <id> --session <id> --confidence <0..1> [--trigger <trigger>] [--reason <text>] [--db <path>]",
+    "  memledger record-outcome --id <claim_id> --event-type <observed_hold|observed_fail|manual_correction> --source <text> [--notes <text>] [--related-claim-id <claim_id>] [--db <path>]",
+    "  memledger show-claim --id <claim_id> [--db <path>]",
     "  memledger history [--id <claim_id>] [--db <path>]"
   ].join("\n");
 }

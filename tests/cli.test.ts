@@ -205,6 +205,50 @@ describe("cli", () => {
     expect(harness.stderr.join("")).toContain('Invalid status "wrong"');
   });
 
+  it("rejects an invalid outcome event type at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "record-outcome",
+        "--id",
+        "clm_1",
+        "--event-type",
+        "not_real",
+        "--source",
+        "operator"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid event type "not_real"');
+  });
+
+  it("rejects manual superseded outcomes at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "record-outcome",
+        "--id",
+        "clm_1",
+        "--event-type",
+        "superseded",
+        "--source",
+        "operator",
+        "--related-claim-id",
+        "clm_2"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid event type "superseded"');
+  });
+
   it("rejects an unknown flag instead of ignoring it", () => {
     const harness = createCliHarness();
     cleanups.push(harness.close);
@@ -268,5 +312,63 @@ describe("cli", () => {
     expect(addExitCode).toBe(0);
     expect(listExitCode).toBe(0);
     expect(harness.stdout.join("")).toContain("project.status is blocked");
+  });
+
+  it("records an outcome and shows updated confidence", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const claimIdMatch = harness.stdout.join("").match(/added (clm_\d+)/);
+    const claimId = claimIdMatch?.[1];
+
+    expect(addExitCode).toBe(0);
+    expect(claimId).toBeDefined();
+
+    const outcomeExitCode = runCli(
+      [
+        "record-outcome",
+        "--id",
+        claimId as string,
+        "--event-type",
+        "observed_hold",
+        "--source",
+        "operator",
+        "--notes",
+        "Held when checked."
+      ],
+      harness.dependencies
+    );
+
+    const showExitCode = runCli(
+      ["show-claim", "--id", claimId as string],
+      harness.dependencies
+    );
+
+    expect(outcomeExitCode).toBe(0);
+    expect(showExitCode).toBe(0);
+    expect(harness.stdout.join("")).toContain("observed_hold");
+    expect(harness.stdout.join("")).toContain("currentConfidence: 0.44");
+    expect(harness.stdout.join("")).toContain("Outcomes:");
   });
 });

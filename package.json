@@ -1,7 +1,7 @@
 {
   "name": "memledger",
-  "version": "0.1.0",
-  "description": "Append-only CLI ledger for structured agent memory claims.",
+  "version": "0.2.0",
+  "description": "Append-only CLI ledger for structured agent memory claims and outcomes.",
   "private": true,
   "type": "module",
   "bin": {
