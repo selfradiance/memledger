@@ -46,6 +46,37 @@ interface ParsedArgs {
 
 const DEFAULT_DB_FILENAME = "memledger.db";
 
+const COMMAND_OPTIONS = {
+  add: new Set([
+    "subject",
+    "predicate",
+    "object",
+    "author",
+    "session",
+    "trigger",
+    "confidence",
+    "db",
+    "help"
+  ]),
+  list: new Set(["status", "db", "help"]),
+  contest: new Set(["id", "actor", "session", "reason", "db", "help"]),
+  supersede: new Set([
+    "id",
+    "subject",
+    "predicate",
+    "object",
+    "author",
+    "session",
+    "trigger",
+    "confidence",
+    "reason",
+    "db",
+    "help"
+  ]),
+  history: new Set(["id", "db", "help"]),
+  help: new Set<string>()
+} as const;
+
 export function runCli(
   argv: string[],
   dependencies: CliDependencies = {}
@@ -59,6 +90,21 @@ export function runCli(
 
   if (!parsed.command) {
     io.stderr(`error: Missing command.\n\n${usageText()}\n`);
+    return 1;
+  }
+
+  if (!isKnownCommand(parsed.command)) {
+    io.stderr(
+      `error: Unknown command "${parsed.command}".\n\n${usageText()}\n`
+    );
+    return 1;
+  }
+
+  try {
+    validateOptions(parsed.command, parsed.options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    io.stderr(`error: ${message}\n`);
     return 1;
   }
 
@@ -159,9 +205,6 @@ export function runCli(
       }
 
       default:
-        io.stderr(
-          `error: Unknown command "${parsed.command}".\n\n${usageText()}\n`
-        );
         return 1;
     }
   } catch (error) {
@@ -227,6 +270,25 @@ function parseArgv(argv: string[]): ParsedArgs {
     command,
     options
   };
+}
+
+function isKnownCommand(command: string): command is keyof typeof COMMAND_OPTIONS {
+  return Object.hasOwn(COMMAND_OPTIONS, command);
+}
+
+function validateOptions(
+  command: keyof typeof COMMAND_OPTIONS,
+  options: Map<string, string | boolean>
+): void {
+  const allowedOptions = COMMAND_OPTIONS[command];
+
+  for (const optionName of options.keys()) {
+    if (!allowedOptions.has(optionName)) {
+      throw new Error(
+        `Unknown option --${optionName} for command ${command}.`
+      );
+    }
+  }
 }
 
 function parseConfidence(options: Map<string, string | boolean>): number {

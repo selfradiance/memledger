@@ -127,5 +127,6 @@ npm run build
 - Database triggers block updates and deletes on both `claims` and `events`.
 - `contest` appends an event but does not rewrite stored claim text.
 - `supersede` creates a new claim row and a supersede event on the original claim.
-- `history --id <claim_id>` includes both direct events on that claim and linked supersede events needed to reconstruct its local lineage.
+- `history --id <claim_id>` supports immediate/local lineage inspection only. It includes direct events on that claim and directly linked supersede events for its nearest parent/child boundary.
+- `history --id <claim_id>` does not recursively reconstruct a full multi-hop chain.
 - This v0.1 CLI rejects superseding the same claim twice to keep the initial lineage model explicit and simple.

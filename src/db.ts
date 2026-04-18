@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 
 export type SqliteDatabase = Database.Database;
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export function openDatabase(databasePath: string): SqliteDatabase {
   if (databasePath !== ":memory:") {
@@ -70,8 +70,9 @@ export function migrateDatabase(db: SqliteDatabase): void {
       CREATE INDEX idx_claims_created_at
         ON claims(created_at DESC, id DESC);
 
-      CREATE INDEX idx_claims_supersedes
-        ON claims(supersedes_claim_id);
+      CREATE UNIQUE INDEX idx_claims_single_child_supersede
+        ON claims(supersedes_claim_id)
+        WHERE supersedes_claim_id IS NOT NULL;
 
       CREATE INDEX idx_events_claim_created
         ON events(claim_id, created_at ASC, id ASC);
@@ -102,6 +103,18 @@ export function migrateDatabase(db: SqliteDatabase): void {
       BEGIN
         SELECT RAISE(ABORT, 'events are immutable');
       END;
+    `);
+
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }
+
+  if (currentVersion === 1) {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_claims_supersedes;
+
+      CREATE UNIQUE INDEX idx_claims_single_child_supersede
+        ON claims(supersedes_claim_id)
+        WHERE supersedes_claim_id IS NOT NULL;
     `);
 
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);

@@ -59,4 +59,86 @@ describe("db", () => {
       close();
     }
   });
+
+  it("enforces a single superseding child per claim at the database level", () => {
+    const { db, ledger, close } = createTestLedger();
+
+    try {
+      const original = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const insertClaim = db.prepare(`
+        INSERT INTO claims (
+          id,
+          subject,
+          predicate,
+          object,
+          author,
+          session_id,
+          trigger,
+          confidence,
+          created_at,
+          supersedes_claim_id,
+          outcome_stub_json
+        ) VALUES (
+          @id,
+          @subject,
+          @predicate,
+          @object,
+          @author,
+          @session_id,
+          @trigger,
+          @confidence,
+          @created_at,
+          @supersedes_claim_id,
+          @outcome_stub_json
+        )
+      `);
+
+      insertClaim.run({
+        id: "clm_manual_1",
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        session_id: "sess-2",
+        trigger: "correction",
+        confidence: 0.95,
+        created_at: "2026-04-17T12:00:00.100Z",
+        supersedes_claim_id: original.id,
+        outcome_stub_json: JSON.stringify({
+          status: "stub",
+          note: null
+        })
+      });
+
+      expect(() =>
+        insertClaim.run({
+          id: "clm_manual_2",
+          subject: "user.preference",
+          predicate: "prefers",
+          object: "almond milk",
+          author: "agent.beta",
+          session_id: "sess-3",
+          trigger: "correction",
+          confidence: 0.6,
+          created_at: "2026-04-17T12:00:00.200Z",
+          supersedes_claim_id: original.id,
+          outcome_stub_json: JSON.stringify({
+            status: "stub",
+            note: null
+          })
+        })
+      ).toThrowError(/unique/i);
+    } finally {
+      close();
+    }
+  });
 });

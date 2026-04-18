@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { createTestLedger } from "./test-helpers.js";
 
+function summarizeHistory(claimId: string, ledger: ReturnType<typeof createTestLedger>["ledger"]) {
+  return ledger.getClaimHistory(claimId).events.map((event) => ({
+    eventType: event.eventType,
+    claimId: event.claimId,
+    relatedClaimId: event.relatedClaimId
+  }));
+}
+
 describe("ledger", () => {
   it("adds claims and appends a claim_added event", () => {
     const { ledger, close } = createTestLedger();
@@ -120,6 +128,66 @@ describe("ledger", () => {
     }
   });
 
+  it("shows immediate local lineage for A -> B", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claimA = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const { newClaim: claimB } = ledger.supersedeClaim({
+        targetClaimId: claimA.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        confidence: 0.95,
+        reason: "User explicitly corrected the earlier assumption."
+      });
+
+      expect(summarizeHistory(claimA.id, ledger)).toEqual([
+        {
+          eventType: "claim_added",
+          claimId: claimA.id,
+          relatedClaimId: null
+        },
+        {
+          eventType: "claim_added",
+          claimId: claimB.id,
+          relatedClaimId: claimA.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        }
+      ]);
+
+      expect(summarizeHistory(claimB.id, ledger)).toEqual([
+        {
+          eventType: "claim_added",
+          claimId: claimB.id,
+          relatedClaimId: claimA.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        }
+      ]);
+    } finally {
+      close();
+    }
+  });
+
   it("fails cleanly when superseding a nonexistent claim", () => {
     const { ledger, close } = createTestLedger();
 
@@ -140,11 +208,11 @@ describe("ledger", () => {
     }
   });
 
-  it("includes linked supersede events in the original claim history", () => {
+  it("shows immediate local lineage only for A -> B -> C", () => {
     const { ledger, close } = createTestLedger();
 
     try {
-      const original = ledger.addClaim({
+      const claimA = ledger.addClaim({
         subject: "user.preference",
         predicate: "prefers",
         object: "oat milk",
@@ -154,8 +222,8 @@ describe("ledger", () => {
         confidence: 0.7
       });
 
-      const result = ledger.supersedeClaim({
-        targetClaimId: original.id,
+      const { newClaim: claimB } = ledger.supersedeClaim({
+        targetClaimId: claimA.id,
         subject: "user.preference",
         predicate: "prefers",
         object: "soy milk",
@@ -165,33 +233,70 @@ describe("ledger", () => {
         reason: "User explicitly corrected the earlier assumption."
       });
 
-      const history = ledger.getClaimHistory(original.id);
+      const { newClaim: claimC } = ledger.supersedeClaim({
+        targetClaimId: claimB.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "almond milk",
+        author: "agent.alpha",
+        sessionId: "sess-3",
+        confidence: 0.9,
+        reason: "User corrected the second claim too."
+      });
 
-      expect(history.events).toHaveLength(3);
-      expect(
-        history.events.some(
-          (event) =>
-            event.eventType === "claim_added" &&
-            event.claimId === original.id &&
-            event.relatedClaimId === null
-        )
-      ).toBe(true);
-      expect(
-        history.events.some(
-          (event) =>
-            event.eventType === "claim_added" &&
-            event.claimId === result.newClaim.id &&
-            event.relatedClaimId === original.id
-        )
-      ).toBe(true);
-      expect(
-        history.events.some(
-          (event) =>
-            event.eventType === "claim_superseded" &&
-            event.claimId === original.id &&
-            event.relatedClaimId === result.newClaim.id
-        )
-      ).toBe(true);
+      expect(summarizeHistory(claimA.id, ledger)).toEqual([
+        {
+          eventType: "claim_added",
+          claimId: claimA.id,
+          relatedClaimId: null
+        },
+        {
+          eventType: "claim_added",
+          claimId: claimB.id,
+          relatedClaimId: claimA.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        }
+      ]);
+
+      expect(summarizeHistory(claimB.id, ledger)).toEqual([
+        {
+          eventType: "claim_added",
+          claimId: claimB.id,
+          relatedClaimId: claimA.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimA.id,
+          relatedClaimId: claimB.id
+        },
+        {
+          eventType: "claim_added",
+          claimId: claimC.id,
+          relatedClaimId: claimB.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimB.id,
+          relatedClaimId: claimC.id
+        }
+      ]);
+
+      expect(summarizeHistory(claimC.id, ledger)).toEqual([
+        {
+          eventType: "claim_added",
+          claimId: claimC.id,
+          relatedClaimId: claimB.id
+        },
+        {
+          eventType: "claim_superseded",
+          claimId: claimB.id,
+          relatedClaimId: claimC.id
+        }
+      ]);
     } finally {
       close();
     }

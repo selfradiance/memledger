@@ -205,6 +205,39 @@ describe("cli", () => {
     expect(harness.stderr.join("")).toContain('Invalid status "wrong"');
   });
 
+  it("rejects an unknown flag instead of ignoring it", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4",
+        "--unexpected",
+        "value"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain(
+      "Unknown option --unexpected for command add"
+    );
+  });
+
   it("can add and list claims through the CLI harness", () => {
     const harness = createCliHarness();
     cleanups.push(harness.close);
