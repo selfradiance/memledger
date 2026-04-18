@@ -1,0 +1,239 @@
+import { describe, expect, it } from "vitest";
+
+import { createTestLedger } from "./test-helpers.js";
+
+describe("ledger", () => {
+  it("adds claims and appends a claim_added event", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      const claims = ledger.listClaims();
+      const history = ledger.getLedgerHistory();
+
+      expect(claims).toHaveLength(1);
+      expect(claims[0]?.id).toBe(claim.id);
+      expect(history).toHaveLength(1);
+      expect(history[0]?.eventType).toBe("claim_added");
+    } finally {
+      close();
+    }
+  });
+
+  it("contests a claim without editing the original claim row", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const result = ledger.contestClaim({
+        claimId: claim.id,
+        actor: "agent.beta",
+        sessionId: "sess-2",
+        reason: "User corrected this in a later turn."
+      });
+
+      const refreshed = ledger.getClaim(claim.id);
+      const history = ledger.getClaimHistory(claim.id);
+
+      expect(result.event.eventType).toBe("claim_contested");
+      expect(refreshed?.object).toBe("oat milk");
+      expect(refreshed?.contested).toBe(true);
+      expect(refreshed?.contestCount).toBe(1);
+      expect(history.events.map((event) => event.eventType)).toEqual([
+        "claim_added",
+        "claim_contested"
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("fails cleanly when contesting a nonexistent claim", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      expect(() =>
+        ledger.contestClaim({
+          claimId: "missing",
+          actor: "agent.beta",
+          sessionId: "sess-2",
+          reason: "This claim does not exist."
+        })
+      ).toThrowError("Claim missing was not found.");
+    } finally {
+      close();
+    }
+  });
+
+  it("supersedes a claim by creating a new claim and a supersede event", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const original = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const result = ledger.supersedeClaim({
+        targetClaimId: original.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        confidence: 0.95,
+        reason: "User explicitly corrected the earlier assumption."
+      });
+
+      const originalAfter = ledger.getClaim(original.id);
+      const newClaim = ledger.getClaim(result.newClaim.id);
+
+      expect(result.event.eventType).toBe("claim_superseded");
+      expect(originalAfter?.supersededByClaimId).toBe(result.newClaim.id);
+      expect(newClaim?.supersedesClaimId).toBe(original.id);
+      expect(newClaim?.object).toBe("soy milk");
+    } finally {
+      close();
+    }
+  });
+
+  it("fails cleanly when superseding a nonexistent claim", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      expect(() =>
+        ledger.supersedeClaim({
+          targetClaimId: "missing",
+          subject: "user.preference",
+          predicate: "prefers",
+          object: "soy milk",
+          author: "agent.alpha",
+          sessionId: "sess-2",
+          confidence: 0.95
+        })
+      ).toThrowError("Claim missing was not found.");
+    } finally {
+      close();
+    }
+  });
+
+  it("includes linked supersede events in the original claim history", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const original = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const result = ledger.supersedeClaim({
+        targetClaimId: original.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        confidence: 0.95,
+        reason: "User explicitly corrected the earlier assumption."
+      });
+
+      const history = ledger.getClaimHistory(original.id);
+
+      expect(history.events).toHaveLength(3);
+      expect(
+        history.events.some(
+          (event) =>
+            event.eventType === "claim_added" &&
+            event.claimId === original.id &&
+            event.relatedClaimId === null
+        )
+      ).toBe(true);
+      expect(
+        history.events.some(
+          (event) =>
+            event.eventType === "claim_added" &&
+            event.claimId === result.newClaim.id &&
+            event.relatedClaimId === original.id
+        )
+      ).toBe(true);
+      expect(
+        history.events.some(
+          (event) =>
+            event.eventType === "claim_superseded" &&
+            event.claimId === original.id &&
+            event.relatedClaimId === result.newClaim.id
+        )
+      ).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("rejects superseding the same claim twice in v0.1", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const original = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      ledger.supersedeClaim({
+        targetClaimId: original.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        confidence: 0.95
+      });
+
+      expect(() =>
+        ledger.supersedeClaim({
+          targetClaimId: original.id,
+          subject: "user.preference",
+          predicate: "prefers",
+          object: "almond milk",
+          author: "agent.gamma",
+          sessionId: "sess-3",
+          confidence: 0.6
+        })
+      ).toThrowError(/already superseded/i);
+    } finally {
+      close();
+    }
+  });
+});

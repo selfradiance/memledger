@@ -1,0 +1,177 @@
+import { afterEach, describe, expect, it } from "vitest";
+
+import { runCli } from "../src/cli.js";
+import { createTestLedger } from "./test-helpers.js";
+
+function createCliHarness() {
+  const { ledger, close } = createTestLedger();
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+
+  return {
+    stdout,
+    stderr,
+    close,
+    dependencies: {
+      io: {
+        stdout: (message: string) => {
+          stdout.push(message);
+        },
+        stderr: (message: string) => {
+          stderr.push(message);
+        }
+      },
+      createLedger: () => ({
+        ledger,
+        close: () => {}
+      })
+    }
+  };
+}
+
+describe("cli", () => {
+  const cleanups: Array<() => void> = [];
+
+  afterEach(() => {
+    while (cleanups.length > 0) {
+      cleanups.pop()?.();
+    }
+  });
+
+  it("prints an error for an unknown command", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(["unknown"], harness.dependencies);
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Unknown command "unknown"');
+  });
+
+  it("prints an error when required add flags are missing", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "user.preference",
+        "--object",
+        "oat milk",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "assumption",
+        "--confidence",
+        "0.7"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain("Missing required option --predicate");
+  });
+
+  it("returns a clean error when history is requested for a missing claim", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(["history", "--id", "missing"], harness.dependencies);
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain("Claim missing was not found");
+  });
+
+  it("rejects an invalid trigger at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "bad_trigger",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid trigger "bad_trigger"');
+  });
+
+  it("rejects an out-of-range confidence at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "1.2"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid confidence "1.2"');
+  });
+
+  it("can add and list claims through the CLI harness", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const listExitCode = runCli(["list"], harness.dependencies);
+
+    expect(addExitCode).toBe(0);
+    expect(listExitCode).toBe(0);
+    expect(harness.stdout.join("")).toContain("project.status is blocked");
+  });
+});
