@@ -6,3 +6,5 @@ coverage
 *.db-wal
 *.sqlite
 .DS_Store
+MEMLEDGER_PROJECT_CONTEXT.md
+MemLedger_Project_Context.docx

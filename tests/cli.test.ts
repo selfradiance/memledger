@@ -85,6 +85,58 @@ describe("cli", () => {
     expect(harness.stderr.join("")).toContain("Claim missing was not found");
   });
 
+  it("returns a clean error when contesting a missing claim", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "contest",
+        "--id",
+        "missing",
+        "--actor",
+        "agent.beta",
+        "--session",
+        "sess-2",
+        "--reason",
+        "This claim does not exist."
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain("Claim missing was not found");
+  });
+
+  it("returns a clean error when superseding a missing claim", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "supersede",
+        "--id",
+        "missing",
+        "--subject",
+        "user.preference",
+        "--predicate",
+        "prefers",
+        "--object",
+        "soy milk",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-2",
+        "--confidence",
+        "0.95"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain("Claim missing was not found");
+  });
+
   it("rejects an invalid trigger at CLI validation time", () => {
     const harness = createCliHarness();
     cleanups.push(harness.close);
@@ -141,6 +193,16 @@ describe("cli", () => {
 
     expect(exitCode).toBe(1);
     expect(harness.stderr.join("")).toContain('Invalid confidence "1.2"');
+  });
+
+  it("rejects an invalid list status at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(["list", "--status", "wrong"], harness.dependencies);
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid status "wrong"');
   });
 
   it("can add and list claims through the CLI harness", () => {

@@ -42,6 +42,8 @@ npm install
 
 Run directly in development:
 
+Examples below use placeholder claim IDs such as `clm_123`. In real use, capture the actual claim ID printed by `add`.
+
 ```bash
 npm run cli -- add \
   --subject "user.preference" \
@@ -82,6 +84,7 @@ npm run cli -- history --id "clm_123"
 ```
 
 By default MemLedger writes to `./memledger.db`. Use `--db :memory:` for tests or `--db ./path/to/file.db` to override it.
+If `--trigger` is omitted on `supersede`, it defaults to `correction`.
 
 ## Data Model
 
@@ -124,4 +127,5 @@ npm run build
 - Database triggers block updates and deletes on both `claims` and `events`.
 - `contest` appends an event but does not rewrite stored claim text.
 - `supersede` creates a new claim row and a supersede event on the original claim.
+- `history --id <claim_id>` includes both direct events on that claim and linked supersede events needed to reconstruct its local lineage.
 - This v0.1 CLI rejects superseding the same claim twice to keep the initial lineage model explicit and simple.

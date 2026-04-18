@@ -15,8 +15,8 @@ import {
   claimTriggerSchema,
   confidenceSchema
 } from "./schema.js";
-import { CLAIM_TRIGGERS } from "./types.js";
-import type { ClaimStatusFilter } from "./types.js";
+import { CLAIM_STATUS_FILTERS, CLAIM_TRIGGERS } from "./types.js";
+import type { ClaimStatusFilter, ClaimTrigger } from "./types.js";
 
 export interface CliIo {
   stdout: (message: string) => void;
@@ -246,14 +246,12 @@ function parseConfidence(options: Map<string, string | boolean>): number {
 
 function parseRequiredTrigger(
   options: Map<string, string | boolean>
-): "task_completion" | "correction" | "assumption" | "inference" {
+): ClaimTrigger {
   const raw = requireOption(options, "trigger");
   return parseTrigger(raw);
 }
 
-function parseTrigger(
-  raw: string
-): "task_completion" | "correction" | "assumption" | "inference" {
+function parseTrigger(raw: string): ClaimTrigger {
   const parsed = claimTriggerSchema.safeParse(raw);
 
   if (!parsed.success) {
@@ -274,7 +272,15 @@ function parseStatus(raw: string | boolean | undefined): ClaimStatusFilter {
     throw new Error("Expected --status to have a value.");
   }
 
-  return claimStatusFilterSchema.parse(raw);
+  const parsed = claimStatusFilterSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid status "${raw}". Expected one of: ${CLAIM_STATUS_FILTERS.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
 }
 
 function requireOption(
