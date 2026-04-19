@@ -1,29 +1,32 @@
 # MemLedger
 
-MemLedger is a narrow v0.2.0 TypeScript CLI for structured, append-only agent memory claims.
+MemLedger is a narrow v0.3.0 TypeScript CLI for structured, append-only agent memory claims.
 
 It is intentionally small:
 
-- It stores structured claims and outcomes locally in SQLite.
+- It stores structured claims, outcomes, and audits locally in SQLite.
 - It validates every public input with Zod.
 - It keeps claim rows append-only.
 - It records every mutation in an immutable event log.
 - It supports manual contest and supersede workflows.
 - It recalculates current confidence deterministically from logged outcomes.
+- It records append-only claim audits without changing the confidence model.
 
-It is intentionally not a general memory platform. There is no retrieval layer, no embeddings, no vector search, no auditor agent, no autonomous review loop, no blame engine, and no per-author reliability scoring in v0.2.
+It is intentionally not a general memory platform. There is no retrieval layer, no embeddings, no vector search, no auditor agent, no autonomous review loop, no blame engine, and no per-author reliability scoring in v0.3.
 
 ## Status
 
-`v0.2.0`
+`v0.3.0`
 
-MemLedger v0.2 adds narrow outcome tracking for memory claims.
+MemLedger v0.3 adds append-only claim audits: structured reviewer assessments recorded alongside claims without changing the deterministic confidence model.
 
-What v0.2 adds:
+What v0.3 ships:
 
 - append-only outcome logging for claim history
 - deterministic confidence recalculation from outcome history
 - structural supersession support
+- append-only claim audits attached to existing claims
+- CLI support for recording and showing audits
 - CLI support for recording outcomes and viewing claim history/status
 - migration and constraint hardening for outcome tracking
 
@@ -47,9 +50,10 @@ MemLedger treats memory as testimony:
 - Corrections create new claims that supersede earlier ones.
 - Existing claim text is never edited in place.
 - Outcomes are append-only records attached to existing claims.
+- Audits are append-only records attached to existing claims.
 - Current confidence is derived from claim history plus direct logged outcomes.
 
-v0.2 does not try to infer truth. It only performs local, deterministic bookkeeping from explicit events that were recorded.
+v0.3 does not try to infer truth. It only performs local, deterministic bookkeeping from explicit events that were recorded.
 
 ## Stack
 
@@ -119,6 +123,20 @@ npm run cli -- record-outcome \
 ```
 
 ```bash
+npm run cli -- audit-claim \
+  --claim-id "clm_123" \
+  --auditor "review.bot" \
+  --verdict "questions" \
+  --reason "The transcript does not include a direct quote." \
+  --evidence-note "Need a source excerpt for verification." \
+  --recommended-action "contest"
+```
+
+```bash
+npm run cli -- show-audits --claim-id "clm_123"
+```
+
+```bash
 npm run cli -- show-claim --id "clm_123"
 ```
 
@@ -126,6 +144,8 @@ By default MemLedger writes to `./memledger.db`. Use `--db :memory:` for tests o
 If `--trigger` is omitted on `supersede`, it defaults to `correction`.
 Manual `record-outcome` accepts `observed_hold`, `observed_fail`, and `manual_correction`.
 `superseded` outcomes are emitted by `supersede`, not recorded manually.
+`audit-claim` accepts verdict values `supports`, `questions`, `rejects`, and `insufficient_evidence`.
+`audit-claim` accepts recommended actions `none`, `contest`, `supersede`, and `manual_correction`.
 
 ## Data Model
 
@@ -162,6 +182,31 @@ Events are stored separately as immutable append-only records:
 - `claim_contested`
 - `claim_superseded`
 
+Claim audits are stored separately as immutable append-only records with:
+
+- `id`
+- `claimId`
+- `auditor`
+- `verdict`
+- `reason`
+- `evidenceNote`
+- `recommendedAction`
+- `createdAt`
+
+Audit verdicts are limited to:
+
+- `supports`
+- `questions`
+- `rejects`
+- `insufficient_evidence`
+
+Audit recommended actions are limited to:
+
+- `none`
+- `contest`
+- `supersede`
+- `manual_correction`
+
 `superseded` outcomes link to a `relatedClaimId` that points at the newer claim.
 
 ## Confidence Model
@@ -185,24 +230,30 @@ npm run typecheck
 npm run build
 ```
 
-## Notes On v0.2 Behavior
+## Notes On v0.3 Behavior
 
-- Database triggers block updates and deletes on `claims`, `events`, and `memory_outcomes`.
+- Database triggers block updates and deletes on `claims`, `events`, `memory_outcomes`, and `claim_audits`.
 - `contest` appends an event but does not rewrite stored claim text.
 - `supersede` creates a new claim row, a supersede event on the original claim, and a linked `superseded` outcome on the older claim.
 - `record-outcome` appends an outcome row for `observed_hold`, `observed_fail`, or `manual_correction`. It never edits the claim row in place.
 - `superseded` outcomes are created by `supersede`, not by manual `record-outcome`.
-- `show-claim --id <claim_id>` reports the claim, direct local events, direct logged outcomes, and the current derived confidence.
+- `audit-claim` appends one audit row for an existing claim. It does not edit the claim row, create an outcome row, or create a supersession link.
+- Audit recommendations are advisory only. They do not automatically contest or supersede a claim.
+- `show-audits --claim-id <claim_id>` reports only the direct audits for that claim.
+- `show-claim --id <claim_id>` reports the claim, direct local events, direct logged outcomes, direct audits, and the current derived confidence.
 - `history --id <claim_id>` is still immediate/local lineage inspection only. It shows direct events on that claim and directly linked supersede events at the nearest parent/child boundary.
 - `history --id <claim_id>` does not recursively reconstruct a full multi-hop lineage chain.
 - Current confidence is derived from the claim's base confidence plus its direct logged outcomes. It is intentionally local and recomputable.
-- This v0.2 CLI still rejects superseding the same claim twice to keep the lineage model explicit and simple.
+- Audits do not change current confidence.
+- This v0.3 CLI still rejects superseding the same claim twice to keep the lineage model explicit and simple.
 
 ## Explicit Non-Goals
 
 - No auditor agent
 - No autonomous contest review
 - No background scanner or daemon
+- No automatic contest creation from audits
+- No automatic supersession from audits
 - No vector search or embeddings
 - No causal attribution chain
 - No blame engine or slashing logic

@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 
 import { openDatabase } from "./db.js";
 import {
+  formatClaimAudit,
+  formatClaimAuditList,
   formatClaim,
   formatClaimReport,
   formatClaimHistory,
@@ -13,17 +15,23 @@ import {
 } from "./formatter.js";
 import { MemLedger } from "./ledger.js";
 import {
+  claimAuditRecommendedActionSchema,
+  claimAuditVerdictSchema,
   claimStatusFilterSchema,
   claimTriggerSchema,
   confidenceSchema,
   manualMemoryOutcomeEventTypeSchema
 } from "./schema.js";
 import {
+  CLAIM_AUDIT_RECOMMENDED_ACTIONS,
+  CLAIM_AUDIT_VERDICTS,
   CLAIM_STATUS_FILTERS,
   CLAIM_TRIGGERS,
   MANUAL_MEMORY_OUTCOME_EVENT_TYPES
 } from "./types.js";
 import type {
+  ClaimAuditRecommendedAction,
+  ClaimAuditVerdict,
   ClaimStatusFilter,
   ClaimTrigger,
   ManualMemoryOutcomeEventType
@@ -44,7 +52,9 @@ export interface CliDependencies {
       | "contestClaim"
       | "supersedeClaim"
       | "recordOutcome"
+      | "auditClaim"
       | "getClaimHistory"
+      | "getClaimAudits"
       | "getLedgerHistory"
     >;
     close: () => void;
@@ -94,6 +104,17 @@ const COMMAND_OPTIONS = {
     "db",
     "help"
   ]),
+  "audit-claim": new Set([
+    "claim-id",
+    "auditor",
+    "verdict",
+    "reason",
+    "evidence-note",
+    "recommended-action",
+    "db",
+    "help"
+  ]),
+  "show-audits": new Set(["claim-id", "db", "help"]),
   "show-claim": new Set(["id", "db", "help"]),
   history: new Set(["id", "db", "help"]),
   help: new Set<string>()
@@ -229,6 +250,35 @@ export function runCli(
             result.outcome
           )}\ncurrentConfidence=${result.claim.currentConfidence.toFixed(2)}\n`
         );
+        return 0;
+      }
+
+      case "audit-claim": {
+        const result = handle.ledger.auditClaim({
+          claimId: requireOption(parsed.options, "claim-id"),
+          auditor: requireOption(parsed.options, "auditor"),
+          verdict: parseAuditVerdict(requireOption(parsed.options, "verdict")),
+          reason: requireOption(parsed.options, "reason"),
+          evidenceNote:
+            getOptionalString(parsed.options, "evidence-note") ?? null,
+          recommendedAction: parseAuditRecommendedAction(
+            requireOption(parsed.options, "recommended-action")
+          )
+        });
+
+        io.stdout(
+          `audited ${result.claim.id} with ${result.audit.id}\n${formatClaimAudit(
+            result.audit
+          )}\n`
+        );
+        return 0;
+      }
+
+      case "show-audits": {
+        const audits = handle.ledger.getClaimAudits(
+          requireOption(parsed.options, "claim-id")
+        );
+        io.stdout(`${formatClaimAuditList(audits)}\n`);
         return 0;
       }
 
@@ -387,6 +437,32 @@ function parseOutcomeEventType(raw: string): ManualMemoryOutcomeEventType {
   return parsed.data;
 }
 
+function parseAuditVerdict(raw: string): ClaimAuditVerdict {
+  const parsed = claimAuditVerdictSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid verdict "${raw}". Expected one of: ${CLAIM_AUDIT_VERDICTS.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
+}
+
+function parseAuditRecommendedAction(
+  raw: string
+): ClaimAuditRecommendedAction {
+  const parsed = claimAuditRecommendedActionSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid recommended action "${raw}". Expected one of: ${CLAIM_AUDIT_RECOMMENDED_ACTIONS.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
+}
+
 function parseStatus(raw: string | boolean | undefined): ClaimStatusFilter {
   if (raw === undefined) {
     return "all";
@@ -455,7 +531,7 @@ function resolveDatabasePath(raw: string | boolean | undefined): string {
 
 function usageText(): string {
   return [
-    "MemLedger v0.2",
+    "MemLedger v0.3",
     "",
     "Usage:",
     "  memledger add --subject <text> --predicate <text> --object <text> --author <id> --session <id> --trigger <task_completion|correction|assumption|inference> --confidence <0..1> [--db <path>]",
@@ -463,6 +539,8 @@ function usageText(): string {
     "  memledger contest --id <claim_id> --actor <id> --session <id> --reason <text> [--db <path>]",
     "  memledger supersede --id <claim_id> --subject <text> --predicate <text> --object <text> --author <id> --session <id> --confidence <0..1> [--trigger <trigger>] [--reason <text>] [--db <path>]",
     "  memledger record-outcome --id <claim_id> --event-type <observed_hold|observed_fail|manual_correction> --source <text> [--notes <text>] [--related-claim-id <claim_id>] [--db <path>]",
+    "  memledger audit-claim --claim-id <claim_id> --auditor <id> --verdict <supports|questions|rejects|insufficient_evidence> --reason <text> [--evidence-note <text>] --recommended-action <none|contest|supersede|manual_correction> [--db <path>]",
+    "  memledger show-audits --claim-id <claim_id> [--db <path>]",
     "  memledger show-claim --id <claim_id> [--db <path>]",
     "  memledger history [--id <claim_id>] [--db <path>]"
   ].join("\n");

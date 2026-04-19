@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   addClaimInputSchema,
+  addClaimAuditInputSchema,
+  claimAuditSchema,
   claimStateSchema,
   contestClaimInputSchema,
   recordOutcomeInputSchema,
@@ -107,5 +109,59 @@ describe("schema", () => {
         source: "agent.alpha"
       })
     ).toThrowError(/invalid option/i);
+  });
+
+  it("accepts a valid claim audit payload", () => {
+    const parsed = addClaimAuditInputSchema.parse({
+      claimId: "clm_1",
+      auditor: "review.bot",
+      verdict: "questions",
+      reason: "The supporting source is ambiguous.",
+      evidenceNote: "No timestamp was captured in the transcript.",
+      recommendedAction: "contest"
+    });
+
+    expect(parsed.verdict).toBe("questions");
+    expect(parsed.recommendedAction).toBe("contest");
+  });
+
+  it("rejects an invalid audit verdict", () => {
+    expect(() =>
+      addClaimAuditInputSchema.parse({
+        claimId: "clm_1",
+        auditor: "review.bot",
+        verdict: "approve",
+        reason: "No issue.",
+        recommendedAction: "none"
+      })
+    ).toThrowError(/invalid option/i);
+  });
+
+  it("rejects an invalid audit recommended action", () => {
+    expect(() =>
+      addClaimAuditInputSchema.parse({
+        claimId: "clm_1",
+        auditor: "review.bot",
+        verdict: "supports",
+        reason: "Source aligns with the claim.",
+        recommendedAction: "auto_fix"
+      })
+    ).toThrowError(/invalid option/i);
+  });
+
+  it("accepts a stored claim audit shape", () => {
+    const parsed = claimAuditSchema.parse({
+      id: "aud_1",
+      claimId: "clm_1",
+      auditor: "review.bot",
+      verdict: "supports",
+      reason: "The evidence matches the claim.",
+      evidenceNote: null,
+      recommendedAction: "none",
+      createdAt: "2026-04-17T12:00:00.000Z"
+    });
+
+    expect(parsed.auditor).toBe("review.bot");
+    expect(parsed.evidenceNote).toBeNull();
   });
 });

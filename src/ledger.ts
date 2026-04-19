@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import type { Database as BetterSqliteDatabase } from "better-sqlite3";
 
 import {
+  addClaimAuditInputSchema,
+  claimAuditRowSchema,
+  claimAuditSchema,
   addClaimInputSchema,
   claimStateRowSchema,
   claimStateSchema,
@@ -20,6 +23,8 @@ import {
 import { recalculateCurrentConfidence } from "./confidence.js";
 import type {
   AddClaimInput,
+  AddClaimAuditInput,
+  ClaimAudit,
   ClaimHistory,
   ClaimState,
   LedgerEvent,
@@ -32,7 +37,7 @@ import type {
 
 export interface LedgerDependencies {
   now?: () => string;
-  createId?: (prefix: "clm" | "evt" | "out") => string;
+  createId?: (prefix: "aud" | "clm" | "evt" | "out") => string;
 }
 
 type SqliteDatabase = BetterSqliteDatabase;
@@ -76,17 +81,31 @@ interface MemoryOutcomeRow {
   created_at: string;
 }
 
+interface ClaimAuditRow {
+  id: string;
+  claim_id: string;
+  auditor: string;
+  verdict: ClaimAudit["verdict"];
+  reason: string;
+  evidence_note: string | null;
+  recommended_action: ClaimAudit["recommendedAction"];
+  created_at: string;
+}
+
 export class MemLedger {
   private readonly db: SqliteDatabase;
   private readonly now: () => string;
-  private readonly createId: (prefix: "clm" | "evt" | "out") => string;
+  private readonly createId: (
+    prefix: "aud" | "clm" | "evt" | "out"
+  ) => string;
 
   constructor(db: SqliteDatabase, dependencies: LedgerDependencies = {}) {
     this.db = db;
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.createId =
       dependencies.createId ??
-      ((prefix: "clm" | "evt" | "out") => `${prefix}_${randomUUID()}`);
+      ((prefix: "aud" | "clm" | "evt" | "out") =>
+        `${prefix}_${randomUUID()}`);
   }
 
   addClaim(input: AddClaimInput): ClaimState {
@@ -304,6 +323,35 @@ export class MemLedger {
     })();
   }
 
+  auditClaim(
+    input: AddClaimAuditInput
+  ): { claim: ClaimState; audit: ClaimAudit } {
+    const parsed = addClaimAuditInputSchema.parse(input);
+
+    return this.db.transaction(() => {
+      this.requireClaimState(parsed.claimId);
+
+      const auditId = this.createId("aud");
+      const createdAt = this.now();
+
+      this.insertClaimAudit({
+        id: auditId,
+        claimId: parsed.claimId,
+        auditor: parsed.auditor,
+        verdict: parsed.verdict,
+        reason: parsed.reason,
+        evidenceNote: parsed.evidenceNote ?? null,
+        recommendedAction: parsed.recommendedAction,
+        createdAt
+      });
+
+      return {
+        claim: this.requireClaimState(parsed.claimId),
+        audit: this.requireClaimAudit(auditId)
+      };
+    })();
+  }
+
   supersedeClaim(
     input: SupersedeClaimInput
   ): { previousClaim: ClaimState; newClaim: ClaimState; event: LedgerEvent } {
@@ -459,8 +507,14 @@ export class MemLedger {
     return {
       claim,
       events: rows.map((row) => this.mapEventRow(row)),
-      outcomes: this.listOutcomesForClaim(claimId)
+      outcomes: this.listOutcomesForClaim(claimId),
+      audits: this.listAuditsForClaim(claimId)
     };
+  }
+
+  getClaimAudits(claimId: string): ClaimAudit[] {
+    this.requireClaimState(claimId);
+    return this.listAuditsForClaim(claimId);
   }
 
   getLedgerHistory(): LedgerEvent[] {
@@ -636,6 +690,52 @@ export class MemLedger {
       });
   }
 
+  private insertClaimAudit(audit: {
+    id: string;
+    claimId: string;
+    auditor: string;
+    verdict: ClaimAudit["verdict"];
+    reason: string;
+    evidenceNote: string | null;
+    recommendedAction: ClaimAudit["recommendedAction"];
+    createdAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `
+          INSERT INTO claim_audits (
+            id,
+            claim_id,
+            auditor,
+            verdict,
+            reason,
+            evidence_note,
+            recommended_action,
+            created_at
+          ) VALUES (
+            @id,
+            @claim_id,
+            @auditor,
+            @verdict,
+            @reason,
+            @evidence_note,
+            @recommended_action,
+            @created_at
+          )
+        `
+      )
+      .run({
+        id: audit.id,
+        claim_id: audit.claimId,
+        auditor: audit.auditor,
+        verdict: audit.verdict,
+        reason: audit.reason,
+        evidence_note: audit.evidenceNote,
+        recommended_action: audit.recommendedAction,
+        created_at: audit.createdAt
+      });
+  }
+
   private requireEvent(eventId: string): LedgerEvent {
     const row = this.db
       .prepare(
@@ -688,6 +788,32 @@ export class MemLedger {
     return this.mapOutcomeRow(row);
   }
 
+  private requireClaimAudit(auditId: string): ClaimAudit {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            claim_id,
+            auditor,
+            verdict,
+            reason,
+            evidence_note,
+            recommended_action,
+            created_at
+          FROM claim_audits
+          WHERE id = ?
+        `
+      )
+      .get(auditId) as ClaimAuditRow | undefined;
+
+    if (!row) {
+      throw new Error(`Claim audit ${auditId} was not found.`);
+    }
+
+    return this.mapClaimAuditRow(row);
+  }
+
   private listOutcomesForClaim(claimId: string): MemoryOutcome[] {
     const rows = this.db
       .prepare(
@@ -708,6 +834,29 @@ export class MemLedger {
       .all(claimId) as MemoryOutcomeRow[];
 
     return rows.map((row) => this.mapOutcomeRow(row));
+  }
+
+  private listAuditsForClaim(claimId: string): ClaimAudit[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            claim_id,
+            auditor,
+            verdict,
+            reason,
+            evidence_note,
+            recommended_action,
+            created_at
+          FROM claim_audits
+          WHERE claim_id = ?
+          ORDER BY created_at ASC, id ASC
+        `
+      )
+      .all(claimId) as ClaimAuditRow[];
+
+    return rows.map((row) => this.mapClaimAuditRow(row));
   }
 
   private mapClaimStateRow(row: unknown): ClaimState {
@@ -774,6 +923,21 @@ export class MemLedger {
       source: parsedRow.source,
       notes: parsedRow.notes,
       relatedClaimId: parsedRow.related_claim_id,
+      createdAt: parsedRow.created_at
+    });
+  }
+
+  private mapClaimAuditRow(row: unknown): ClaimAudit {
+    const parsedRow = claimAuditRowSchema.parse(row);
+
+    return claimAuditSchema.parse({
+      id: parsedRow.id,
+      claimId: parsedRow.claim_id,
+      auditor: parsedRow.auditor,
+      verdict: parsedRow.verdict,
+      reason: parsedRow.reason,
+      evidenceNote: parsedRow.evidence_note,
+      recommendedAction: parsedRow.recommended_action,
       createdAt: parsedRow.created_at
     });
   }

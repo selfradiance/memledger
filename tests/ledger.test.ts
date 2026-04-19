@@ -21,6 +21,18 @@ function summarizeOutcomes(
   }));
 }
 
+function summarizeAudits(
+  claimId: string,
+  ledger: ReturnType<typeof createTestLedger>["ledger"]
+) {
+  return ledger.getClaimAudits(claimId).map((audit) => ({
+    id: audit.id,
+    verdict: audit.verdict,
+    recommendedAction: audit.recommendedAction,
+    evidenceNote: audit.evidenceNote
+  }));
+}
+
 describe("ledger", () => {
   it("adds claims and appends a claim_added event", () => {
     const { ledger, close } = createTestLedger();
@@ -200,6 +212,274 @@ describe("ledger", () => {
 
       expect(result.outcome.relatedClaimId).toBeNull();
       expect(result.claim.currentConfidence).toBe(0.52);
+    } finally {
+      close();
+    }
+  });
+
+  it("appends an audit to a valid claim", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      const result = ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "questions",
+        reason: "The transcript does not include a direct quote.",
+        evidenceNote: "Need a source excerpt for verification.",
+        recommendedAction: "contest"
+      });
+
+      expect(result.audit.claimId).toBe(claim.id);
+      expect(result.audit.verdict).toBe("questions");
+      expect(result.claim.currentConfidence).toBe(0.7);
+      expect(ledger.getClaimAudits(claim.id)).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("preserves multiple audits on one claim in append-only order", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "questions",
+        reason: "The first source is ambiguous.",
+        recommendedAction: "contest"
+      });
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "operator",
+        verdict: "supports",
+        reason: "A second source confirms the statement.",
+        recommendedAction: "none"
+      });
+
+      expect(summarizeAudits(claim.id, ledger)).toEqual([
+        {
+          id: "aud_0003",
+          verdict: "questions",
+          recommendedAction: "contest",
+          evidenceNote: null
+        },
+        {
+          id: "aud_0004",
+          verdict: "supports",
+          recommendedAction: "none",
+          evidenceNote: null
+        }
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("returns audits through claim history readback", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "insufficient_evidence",
+        reason: "No confirming artifact is attached.",
+        evidenceNote: "Missing build log reference.",
+        recommendedAction: "manual_correction"
+      });
+
+      const history = ledger.getClaimHistory(claim.id);
+
+      expect(history.audits).toHaveLength(1);
+      expect(history.audits[0]?.auditor).toBe("review.bot");
+      expect(history.audits[0]?.recommendedAction).toBe("manual_correction");
+    } finally {
+      close();
+    }
+  });
+
+  it("does not modify claim state when adding an audit", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "rejects",
+        reason: "A newer local observation conflicts with the claim.",
+        recommendedAction: "supersede"
+      });
+
+      const refreshed = ledger.getClaim(claim.id);
+
+      expect(refreshed?.object).toBe("blocked");
+      expect(refreshed?.contested).toBe(false);
+      expect(refreshed?.supersededByClaimId).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("does not create an outcome row when adding an audit", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "questions",
+        reason: "This needs follow-up evidence.",
+        recommendedAction: "contest"
+      });
+
+      expect(ledger.getClaimHistory(claim.id).outcomes).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
+  it("does not supersede a claim when an audit recommends supersede", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "rejects",
+        reason: "The latest explicit correction points elsewhere.",
+        recommendedAction: "supersede"
+      });
+
+      const refreshed = ledger.getClaim(claim.id);
+      const events = ledger.getClaimHistory(claim.id).events;
+
+      expect(refreshed?.supersededByClaimId).toBeNull();
+      expect(events.map((event) => event.eventType)).toEqual(["claim_added"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("leaves currentConfidence unchanged after one audit", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "questions",
+        reason: "The evidence is incomplete.",
+        recommendedAction: "contest"
+      });
+
+      expect(ledger.getClaim(claim.id)?.currentConfidence).toBe(0.4);
+    } finally {
+      close();
+    }
+  });
+
+  it("leaves currentConfidence unchanged after multiple audits", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "review.bot",
+        verdict: "questions",
+        reason: "The evidence is incomplete.",
+        recommendedAction: "contest"
+      });
+      ledger.auditClaim({
+        claimId: claim.id,
+        auditor: "operator",
+        verdict: "supports",
+        reason: "A later review still supports the claim.",
+        recommendedAction: "none"
+      });
+
+      expect(ledger.getClaim(claim.id)?.currentConfidence).toBe(0.4);
     } finally {
       close();
     }

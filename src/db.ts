@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 
 export type SqliteDatabase = Database.Database;
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export function openDatabase(databasePath: string): SqliteDatabase {
   if (databasePath !== ":memory:") {
@@ -39,6 +39,7 @@ export function migrateDatabase(db: SqliteDatabase): void {
     if (currentVersion === 0) {
       createBaseSchema(db);
       createMemoryOutcomesSchema(db);
+      createClaimAuditsSchema(db);
       db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
       return;
     }
@@ -58,6 +59,7 @@ export function migrateDatabase(db: SqliteDatabase): void {
 
     if (currentVersion === 2) {
       createMemoryOutcomesSchema(db);
+      createClaimAuditsSchema(db);
       db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
       return;
     }
@@ -90,7 +92,15 @@ export function migrateDatabase(db: SqliteDatabase): void {
         ALTER TABLE memory_outcomes_v4 RENAME TO memory_outcomes;
       `);
       createMemoryOutcomesArtifacts(db);
+      createClaimAuditsSchema(db);
+      db.pragma("user_version = 5");
+      return;
+    }
+
+    if (currentVersion === 4) {
+      createClaimAuditsSchema(db);
       db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+      return;
     }
   })();
 
@@ -175,6 +185,40 @@ function createBaseSchema(db: SqliteDatabase): void {
 function createMemoryOutcomesSchema(db: SqliteDatabase): void {
   createMemoryOutcomesTable(db, "memory_outcomes");
   createMemoryOutcomesArtifacts(db);
+}
+
+function createClaimAuditsSchema(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE claim_audits (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT NOT NULL REFERENCES claims(id),
+      auditor TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (
+        verdict IN ('supports', 'questions', 'rejects', 'insufficient_evidence')
+      ),
+      reason TEXT NOT NULL,
+      evidence_note TEXT,
+      recommended_action TEXT NOT NULL CHECK (
+        recommended_action IN ('none', 'contest', 'supersede', 'manual_correction')
+      ),
+      created_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX idx_claim_audits_claim_created
+      ON claim_audits(claim_id, created_at ASC, id ASC);
+
+    CREATE TRIGGER claim_audits_no_update
+    BEFORE UPDATE ON claim_audits
+    BEGIN
+      SELECT RAISE(ABORT, 'claim audits are append-only');
+    END;
+
+    CREATE TRIGGER claim_audits_no_delete
+    BEFORE DELETE ON claim_audits
+    BEGIN
+      SELECT RAISE(ABORT, 'claim audits are append-only');
+    END;
+  `);
 }
 
 function createMemoryOutcomesTable(

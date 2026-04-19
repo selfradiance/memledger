@@ -1,4 +1,5 @@
 import type {
+  ClaimAudit,
   ClaimHistory,
   ClaimParts,
   ClaimState,
@@ -109,13 +110,31 @@ export function formatMemoryOutcome(outcome: MemoryOutcome): string {
   return `${outcome.createdAt} ${outcome.eventType} claim=${outcome.claimId} source=${outcome.source}${relatedClaim}${notes}`;
 }
 
+export function formatClaimAudit(audit: ClaimAudit): string {
+  const evidenceNote = audit.evidenceNote
+    ? ` evidenceNote="${audit.evidenceNote}"`
+    : "";
+
+  return `${audit.createdAt} audit=${audit.id} claim=${audit.claimId} auditor=${audit.auditor} verdict=${audit.verdict} recommendedAction=${audit.recommendedAction} reason="${audit.reason}"${evidenceNote}`;
+}
+
+export function formatClaimAuditList(audits: ClaimAudit[]): string {
+  if (audits.length === 0) {
+    return "No audits found.";
+  }
+
+  return audits.map((audit) => formatClaimAudit(audit)).join("\n");
+}
+
 export function formatClaimReport(history: ClaimHistory): string {
   return [
     formatClaim(history.claim),
     "Local Events:",
     formatHistoryLines(history.events),
     "Outcomes:",
-    formatOutcomeLines(history.outcomes)
+    formatOutcomeLines(history.outcomes),
+    "Audits:",
+    formatAuditLines(history.audits)
   ].join("\n");
 }
 
@@ -133,4 +152,12 @@ function formatOutcomeLines(outcomes: MemoryOutcome[]): string {
   }
 
   return outcomes.map((outcome) => `  - ${formatMemoryOutcome(outcome)}`).join("\n");
+}
+
+function formatAuditLines(audits: ClaimAudit[]): string {
+  if (audits.length === 0) {
+    return "  (none)";
+  }
+
+  return audits.map((audit) => `  - ${formatClaimAudit(audit)}`).join("\n");
 }

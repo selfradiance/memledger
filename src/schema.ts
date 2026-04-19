@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import {
+  CLAIM_AUDIT_RECOMMENDED_ACTIONS,
+  CLAIM_AUDIT_VERDICTS,
   CLAIM_STATUS_FILTERS,
   CLAIM_TRIGGERS,
   EVENT_TYPES,
@@ -25,6 +27,10 @@ export const manualMemoryOutcomeEventTypeSchema = z.enum(
   MANUAL_MEMORY_OUTCOME_EVENT_TYPES
 );
 export const claimStatusFilterSchema = z.enum(CLAIM_STATUS_FILTERS);
+export const claimAuditVerdictSchema = z.enum(CLAIM_AUDIT_VERDICTS);
+export const claimAuditRecommendedActionSchema = z.enum(
+  CLAIM_AUDIT_RECOMMENDED_ACTIONS
+);
 
 export const claimPartsSchema = z.object({
   subject: trimmedText.max(200),
@@ -123,6 +129,26 @@ export const recordOutcomeInputSchema = z.object({
   relatedClaimId: z.union([idSchema, z.null()]).optional()
 });
 
+export const claimAuditSchema = z.object({
+  id: idSchema,
+  claimId: idSchema,
+  auditor: actorSchema,
+  verdict: claimAuditVerdictSchema,
+  reason: reasonSchema,
+  evidenceNote: z.union([reasonSchema, z.null()]),
+  recommendedAction: claimAuditRecommendedActionSchema,
+  createdAt: isoTimestampSchema
+});
+
+export const addClaimAuditInputSchema = z.object({
+  claimId: idSchema,
+  auditor: actorSchema,
+  verdict: claimAuditVerdictSchema,
+  reason: reasonSchema,
+  evidenceNote: z.union([reasonSchema, z.null()]).optional(),
+  recommendedAction: claimAuditRecommendedActionSchema
+});
+
 export const listClaimsOptionsSchema = z.object({
   status: claimStatusFilterSchema.default("all")
 });
@@ -176,5 +202,16 @@ export const memoryOutcomeRowSchema = z.object({
   source: sourceSchema,
   notes: z.union([reasonSchema, z.null()]),
   related_claim_id: z.union([idSchema, z.null()]),
+  created_at: isoTimestampSchema
+});
+
+export const claimAuditRowSchema = z.object({
+  id: idSchema,
+  claim_id: idSchema,
+  auditor: actorSchema,
+  verdict: claimAuditVerdictSchema,
+  reason: reasonSchema,
+  evidence_note: z.union([reasonSchema, z.null()]),
+  recommended_action: claimAuditRecommendedActionSchema,
   created_at: isoTimestampSchema
 });

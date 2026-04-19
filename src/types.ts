@@ -43,6 +43,25 @@ export const CLAIM_STATUS_FILTERS = [
 
 export type ClaimStatusFilter = (typeof CLAIM_STATUS_FILTERS)[number];
 
+export const CLAIM_AUDIT_VERDICTS = [
+  "supports",
+  "questions",
+  "rejects",
+  "insufficient_evidence"
+] as const;
+
+export type ClaimAuditVerdict = (typeof CLAIM_AUDIT_VERDICTS)[number];
+
+export const CLAIM_AUDIT_RECOMMENDED_ACTIONS = [
+  "none",
+  "contest",
+  "supersede",
+  "manual_correction"
+] as const;
+
+export type ClaimAuditRecommendedAction =
+  (typeof CLAIM_AUDIT_RECOMMENDED_ACTIONS)[number];
+
 export interface ClaimParts {
   subject: string;
   predicate: string;
@@ -153,8 +172,29 @@ export interface RecordOutcomeInput {
   relatedClaimId?: string | null;
 }
 
+export interface ClaimAudit {
+  id: string;
+  claimId: string;
+  auditor: string;
+  verdict: ClaimAuditVerdict;
+  reason: string;
+  evidenceNote: string | null;
+  recommendedAction: ClaimAuditRecommendedAction;
+  createdAt: string;
+}
+
+export interface AddClaimAuditInput {
+  claimId: string;
+  auditor: string;
+  verdict: ClaimAuditVerdict;
+  reason: string;
+  evidenceNote?: string | null;
+  recommendedAction: ClaimAuditRecommendedAction;
+}
+
 export interface ClaimHistory {
   claim: ClaimState;
   events: LedgerEvent[];
   outcomes: MemoryOutcome[];
+  audits: ClaimAudit[];
 }

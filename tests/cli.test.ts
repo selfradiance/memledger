@@ -226,6 +226,58 @@ describe("cli", () => {
     expect(harness.stderr.join("")).toContain('Invalid event type "not_real"');
   });
 
+  it("rejects an invalid audit verdict at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        "clm_1",
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "approve",
+        "--reason",
+        "Looks good.",
+        "--recommended-action",
+        "none"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain('Invalid verdict "approve"');
+  });
+
+  it("rejects an invalid audit recommended action at CLI validation time", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        "clm_1",
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "supports",
+        "--reason",
+        "Looks good.",
+        "--recommended-action",
+        "auto_fix"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain(
+      'Invalid recommended action "auto_fix"'
+    );
+  });
+
   it("rejects manual superseded outcomes at CLI validation time", () => {
     const harness = createCliHarness();
     cleanups.push(harness.close);
@@ -247,6 +299,31 @@ describe("cli", () => {
 
     expect(exitCode).toBe(1);
     expect(harness.stderr.join("")).toContain('Invalid event type "superseded"');
+  });
+
+  it("returns a clean error when auditing a missing claim", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const exitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        "missing",
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "questions",
+        "--reason",
+        "No supporting source found.",
+        "--recommended-action",
+        "contest"
+      ],
+      harness.dependencies
+    );
+
+    expect(exitCode).toBe(1);
+    expect(harness.stderr.join("")).toContain("Claim missing was not found");
   });
 
   it("rejects an unknown flag instead of ignoring it", () => {
@@ -370,5 +447,187 @@ describe("cli", () => {
     expect(harness.stdout.join("")).toContain("observed_hold");
     expect(harness.stdout.join("")).toContain("currentConfidence: 0.44");
     expect(harness.stdout.join("")).toContain("Outcomes:");
+  });
+
+  it("adds an audit through the CLI harness", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const claimIdMatch = harness.stdout.join("").match(/added (clm_\d+)/);
+    const claimId = claimIdMatch?.[1];
+
+    expect(addExitCode).toBe(0);
+    expect(claimId).toBeDefined();
+
+    const auditExitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        claimId as string,
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "questions",
+        "--reason",
+        "No direct artifact is attached.",
+        "--evidence-note",
+        "Missing build log.",
+        "--recommended-action",
+        "contest"
+      ],
+      harness.dependencies
+    );
+
+    expect(auditExitCode).toBe(0);
+    expect(harness.stdout.join("")).toContain("audited");
+    expect(harness.stdout.join("")).toContain("verdict=questions");
+    expect(harness.stdout.join("")).toContain("recommendedAction=contest");
+  });
+
+  it("shows audits for a claim through the CLI harness", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const claimIdMatch = harness.stdout.join("").match(/added (clm_\d+)/);
+    const claimId = claimIdMatch?.[1];
+
+    expect(addExitCode).toBe(0);
+    expect(claimId).toBeDefined();
+
+    const auditExitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        claimId as string,
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "insufficient_evidence",
+        "--reason",
+        "No artifact is attached.",
+        "--recommended-action",
+        "manual_correction"
+      ],
+      harness.dependencies
+    );
+
+    const showExitCode = runCli(
+      ["show-audits", "--claim-id", claimId as string],
+      harness.dependencies
+    );
+
+    expect(auditExitCode).toBe(0);
+    expect(showExitCode).toBe(0);
+    expect(harness.stdout.join("")).toContain("audit=");
+    expect(harness.stdout.join("")).toContain("auditor=review.bot");
+    expect(harness.stdout.join("")).toContain(
+      "verdict=insufficient_evidence"
+    );
+    expect(harness.stdout.join("")).toContain(
+      "recommendedAction=manual_correction"
+    );
+    expect(harness.stdout.join("")).toContain('reason="No artifact is attached."');
+  });
+
+  it("includes audits in show-claim output", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const claimIdMatch = harness.stdout.join("").match(/added (clm_\d+)/);
+    const claimId = claimIdMatch?.[1];
+
+    expect(addExitCode).toBe(0);
+    expect(claimId).toBeDefined();
+
+    const auditExitCode = runCli(
+      [
+        "audit-claim",
+        "--claim-id",
+        claimId as string,
+        "--auditor",
+        "review.bot",
+        "--verdict",
+        "questions",
+        "--reason",
+        "Needs a direct source excerpt.",
+        "--recommended-action",
+        "contest"
+      ],
+      harness.dependencies
+    );
+
+    const showExitCode = runCli(
+      ["show-claim", "--id", claimId as string],
+      harness.dependencies
+    );
+
+    expect(auditExitCode).toBe(0);
+    expect(showExitCode).toBe(0);
+    expect(harness.stdout.join("")).toContain("Audits:");
+    expect(harness.stdout.join("")).toContain("auditor=review.bot");
+    expect(harness.stdout.join("")).toContain("verdict=questions");
   });
 });
