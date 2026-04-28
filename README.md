@@ -1,44 +1,34 @@
 # MemLedger
 
-MemLedger is a narrow v0.3.0 TypeScript CLI for structured, append-only agent memory claims.
+MemLedger is a narrow v0.3.0 TypeScript CLI for structured, append-only memory claims, deterministic context packs, and append-only memory-use receipts.
 
 It is intentionally small:
 
-- It stores structured claims, outcomes, and audits locally in SQLite.
-- It validates every public input with Zod.
-- It keeps claim rows append-only.
-- It records every mutation in an immutable event log.
+- It stores structured claims, outcomes, audits, and memory-use receipts locally in SQLite.
+- It validates public inputs with Zod.
+- It keeps claim, outcome, audit, event, and receipt rows append-only.
+- It records every claim mutation in an immutable event log.
 - It supports manual contest and supersede workflows.
 - It recalculates current confidence deterministically from logged outcomes.
-- It records append-only claim audits without changing the confidence model.
+- It assembles assistant context with deterministic keyword retrieval, not embeddings or model calls.
 
-It is intentionally not a general memory platform. There is no retrieval layer, no embeddings, no vector search, no auditor agent, no autonomous review loop, no blame engine, and no per-author reliability scoring in v0.3.
+It is intentionally not a general AI memory platform.
 
 ## Status
 
 `v0.3.0`
 
-MemLedger v0.3 adds append-only claim audits: structured reviewer assessments recorded alongside claims without changing the deterministic confidence model.
+MemLedger v0.3 adds a local context-pack proof: assistant context can be assembled from inspectable memory claims, while superseded or contested claims are excluded or surfaced, and every context-pack generation emits an append-only memory-use receipt.
 
 What v0.3 ships:
 
-- append-only outcome logging for claim history
-- deterministic confidence recalculation from outcome history
-- structural supersession support
-- append-only claim audits attached to existing claims
-- CLI support for recording and showing audits
-- CLI support for recording outcomes and viewing claim history/status
-- migration and constraint hardening for outcome tracking
+- deterministic local search over memory claims
+- context-pack generation for assistant workflows
+- append-only memory-use receipts showing included and excluded claims
+- optional structured `project` and `type` claim metadata for deterministic filters
+- existing outcome logging, confidence recalculation, contest, supersede, and audit commands
 
-What remains deferred:
-
-- no auditor agent
-- no autonomous contest review
-- no blame or slashing logic
-- no per-author reliability scoring
-- no recursive full-chain reconstruction
-
-This remains a local, deterministic memory integrity ledger focused on immediate/local claim history.
+v0.3 remains local-first, deterministic, CLI-driven, and non-semantic.
 
 ## Scope
 
@@ -52,8 +42,10 @@ MemLedger treats memory as testimony:
 - Outcomes are append-only records attached to existing claims.
 - Audits are append-only records attached to existing claims.
 - Current confidence is derived from claim history plus direct logged outcomes.
+- Context packs include claims, not guaranteed facts.
+- Memory-use receipts record which claims were included, which were excluded, and why.
 
-v0.3 does not try to infer truth. It only performs local, deterministic bookkeeping from explicit events that were recorded.
+Memory-use receipts make the invocation of memory auditable. The point is not merely that a system remembers; the point is that a user can inspect which memory claims influenced a given assistant-context bundle.
 
 ## Stack
 
@@ -73,18 +65,20 @@ npm install
 
 Run directly in development:
 
-Examples below use placeholder claim IDs such as `clm_123`. In real use, capture the actual claim ID printed by `add`.
-
 ```bash
 npm run cli -- add \
   --subject "user.preference" \
   --predicate "prefers" \
   --object "oat milk" \
+  --project "prefs" \
+  --type "preference" \
   --author "agent.alpha" \
   --session "sess-1" \
   --trigger "assumption" \
   --confidence 0.7
 ```
+
+Examples below use placeholder claim IDs such as `clm_123`. In real use, capture the actual claim ID printed by `add`.
 
 ```bash
 npm run cli -- list
@@ -104,11 +98,36 @@ npm run cli -- supersede \
   --subject "user.preference" \
   --predicate "prefers" \
   --object "soy milk" \
+  --project "prefs" \
+  --type "preference" \
   --author "agent.alpha" \
   --session "sess-3" \
   --confidence 0.95 \
   --reason "User explicitly corrected the earlier assumption."
 ```
+
+```bash
+npm run cli -- search --query "oat milk" --project "prefs" --type "preference"
+```
+
+```bash
+npm run cli -- context-pack \
+  --query "oat milk" \
+  --project "prefs" \
+  --type "preference" \
+  --limit 10 \
+  --format markdown
+```
+
+```bash
+npm run cli -- receipts-list
+```
+
+```bash
+npm run cli -- receipts-show --id "rcp_123"
+```
+
+Additional local inspection and v0.2 behavior:
 
 ```bash
 npm run cli -- history --id "clm_123"
@@ -141,11 +160,28 @@ npm run cli -- show-claim --id "clm_123"
 ```
 
 By default MemLedger writes to `./memledger.db`. Use `--db :memory:` for tests or `--db ./path/to/file.db` to override it.
-If `--trigger` is omitted on `supersede`, it defaults to `correction`.
-Manual `record-outcome` accepts `observed_hold`, `observed_fail`, and `manual_correction`.
-`superseded` outcomes are emitted by `supersede`, not recorded manually.
-`audit-claim` accepts verdict values `supports`, `questions`, `rejects`, and `insufficient_evidence`.
-`audit-claim` accepts recommended actions `none`, `contest`, `supersede`, and `manual_correction`.
+
+## Context Packs
+
+`context-pack` uses `deterministic_keyword_v1` retrieval:
+
+- tokenizes the query and claim fields locally
+- searches claim text plus relevant metadata
+- excludes contested claims from included context
+- excludes superseded claims from included context
+- reports excluded matching claims with reasons
+- writes one append-only memory-use receipt for every successful generation
+
+Markdown context packs contain:
+
+- the query
+- generation timestamp
+- retrieval method
+- included claims
+- excluded or warned claims
+- the memory-use receipt ID and claim ID lists
+
+Use `--format json` for stable JSON output.
 
 ## Data Model
 
@@ -156,6 +192,8 @@ Claims are structured, not raw blobs:
   "subject": "user.preference",
   "predicate": "prefers",
   "object": "oat milk",
+  "project": "prefs",
+  "type": "preference",
   "author": "agent.alpha",
   "sessionId": "sess-1",
   "trigger": "assumption",
@@ -182,38 +220,29 @@ Events are stored separately as immutable append-only records:
 - `claim_contested`
 - `claim_superseded`
 
-Claim audits are stored separately as immutable append-only records with:
+Claim audits are stored separately as immutable append-only records.
 
-- `id`
-- `claimId`
-- `auditor`
-- `verdict`
-- `reason`
-- `evidenceNote`
-- `recommendedAction`
-- `createdAt`
+Memory-use receipts are stored separately as immutable append-only records with:
 
-Audit verdicts are limited to:
+- `receipt_id`
+- `timestamp`
+- `query`
+- `retrieval_method`
+- `filters`
+- `included_claim_ids`
+- `excluded_claim_ids`
+- `exclusion_reasons`
+- `output_format`
+- `retrieval_version`
+- `schema_version`
 
-- `supports`
-- `questions`
-- `rejects`
-- `insufficient_evidence`
-
-Audit recommended actions are limited to:
-
-- `none`
-- `contest`
-- `supersede`
-- `manual_correction`
-
-`superseded` outcomes link to a `relatedClaimId` that points at the newer claim.
+Each receipt also has a corresponding immutable receipt event row.
 
 ## Confidence Model
 
 Each claim stores a base confidence at creation time.
 
-MemLedger v0.2 also reports a current confidence, recalculated deterministically from direct outcomes logged against that claim:
+MemLedger reports current confidence, recalculated deterministically from direct outcomes logged against that claim:
 
 - `observed_hold` nudges confidence upward
 - `observed_fail` nudges confidence downward
@@ -221,6 +250,15 @@ MemLedger v0.2 also reports a current confidence, recalculated deterministically
 - `manual_correction` reduces confidence without implying author blame
 
 This is deterministic bookkeeping, not truth adjudication.
+
+## Release Notes
+
+### v0.3.0 - Context Packs and Memory-Use Receipts
+
+- Adds deterministic local search over memory claims.
+- Adds context-pack generation for assistant workflows.
+- Adds append-only memory-use receipts showing included and excluded claims.
+- Keeps scope local-first, deterministic, and non-semantic.
 
 ## Development
 
@@ -232,29 +270,27 @@ npm run build
 
 ## Notes On v0.3 Behavior
 
-- Database triggers block updates and deletes on `claims`, `events`, `memory_outcomes`, and `claim_audits`.
+- Database triggers block updates and deletes on `claims`, `events`, `memory_outcomes`, `claim_audits`, `memory_use_receipts`, and `memory_use_receipt_events`.
 - `contest` appends an event but does not rewrite stored claim text.
 - `supersede` creates a new claim row, a supersede event on the original claim, and a linked `superseded` outcome on the older claim.
-- `record-outcome` appends an outcome row for `observed_hold`, `observed_fail`, or `manual_correction`. It never edits the claim row in place.
+- Manual `record-outcome` accepts `observed_hold`, `observed_fail`, and `manual_correction`.
 - `superseded` outcomes are created by `supersede`, not by manual `record-outcome`.
 - `audit-claim` appends one audit row for an existing claim. It does not edit the claim row, create an outcome row, or create a supersession link.
 - Audit recommendations are advisory only. They do not automatically contest or supersede a claim.
-- `show-audits --claim-id <claim_id>` reports only the direct audits for that claim.
-- `show-claim --id <claim_id>` reports the claim, direct local events, direct logged outcomes, direct audits, and the current derived confidence.
-- `history --id <claim_id>` is still immediate/local lineage inspection only. It shows direct events on that claim and directly linked supersede events at the nearest parent/child boundary.
-- `history --id <claim_id>` does not recursively reconstruct a full multi-hop lineage chain.
-- Current confidence is derived from the claim's base confidence plus its direct logged outcomes. It is intentionally local and recomputable.
+- `search` and `context-pack` include only matching claims that are not contested and not superseded.
+- Matching contested or superseded claims are surfaced as excluded, with reasons.
+- `history --id <claim_id>` remains immediate/local lineage inspection only.
+- Current confidence is derived from the claim's base confidence plus its direct logged outcomes.
 - Audits do not change current confidence.
-- This v0.3 CLI still rejects superseding the same claim twice to keep the lineage model explicit and simple.
 
-## Explicit Non-Goals
+## Explicit Non-Claims
 
-- No auditor agent
-- No autonomous contest review
-- No background scanner or daemon
-- No automatic contest creation from audits
-- No automatic supersession from audits
-- No vector search or embeddings
-- No causal attribution chain
-- No blame engine or slashing logic
-- No per-author reliability scoring yet
+- This is not a general AI memory platform.
+- This is not semantic long-term memory.
+- This does not prove retrieved claims are true.
+- This does not prove the model obeyed the context pack.
+- This does not sync memory across assistants.
+- This does not use embeddings, vector search, or external model calls.
+- This is not a hosted service.
+- This is not a chatbot or general AI assistant.
+- This does not add causal attribution, blame logic, or per-author reliability scoring.

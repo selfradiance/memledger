@@ -11,42 +11,58 @@ import {
   claimStateSchema,
   contestClaimInputSchema,
   eventRowSchema,
+  generateContextPackInputSchema,
   ledgerEventPayloadSchema,
   ledgerEventSchema,
   listClaimsOptionsSchema,
+  memoryUseReceiptRowSchema,
+  memoryUseReceiptSchema,
   memoryOutcomeRowSchema,
   memoryOutcomeSchema,
   outcomeTrackingStubSchema,
   recordOutcomeInputSchema,
+  searchClaimsInputSchema,
   supersedeClaimInputSchema
 } from "./schema.js";
 import { recalculateCurrentConfidence } from "./confidence.js";
 import type {
   AddClaimInput,
   AddClaimAuditInput,
+  ClaimExclusionReason,
   ClaimAudit,
   ClaimHistory,
+  ClaimSearchResult,
   ClaimState,
+  ContextPack,
   LedgerEvent,
   LedgerEventPayload,
   ListClaimsOptions,
+  GenerateContextPackInput,
+  MemoryUseReceipt,
   MemoryOutcome,
   RecordOutcomeInput,
+  SearchClaimsInput,
   SupersedeClaimInput
 } from "./types.js";
 
 export interface LedgerDependencies {
   now?: () => string;
-  createId?: (prefix: "aud" | "clm" | "evt" | "out") => string;
+  createId?: (prefix: LedgerIdPrefix) => string;
 }
 
 type SqliteDatabase = BetterSqliteDatabase;
+type LedgerIdPrefix = "aud" | "clm" | "evt" | "out" | "rcp";
+
+const RETRIEVAL_METHOD = "deterministic_keyword_v1" as const;
+const MEMORY_USE_RECEIPT_SCHEMA_VERSION = 1 as const;
 
 interface ClaimStateRow {
   id: string;
   subject: string;
   predicate: string;
   object: string;
+  project: string | null;
+  claim_type: string | null;
   author: string;
   session_id: string;
   trigger: ClaimState["trigger"];
@@ -92,20 +108,31 @@ interface ClaimAuditRow {
   created_at: string;
 }
 
+interface MemoryUseReceiptRow {
+  id: string;
+  created_at: string;
+  query: string;
+  retrieval_method: "deterministic_keyword_v1";
+  retrieval_version: "deterministic_keyword_v1";
+  filters_json: string;
+  included_claim_ids_json: string;
+  excluded_claim_ids_json: string;
+  exclusion_reasons_json: string;
+  output_format: "markdown" | "json";
+  schema_version: 1;
+}
+
 export class MemLedger {
   private readonly db: SqliteDatabase;
   private readonly now: () => string;
-  private readonly createId: (
-    prefix: "aud" | "clm" | "evt" | "out"
-  ) => string;
+  private readonly createId: (prefix: LedgerIdPrefix) => string;
 
   constructor(db: SqliteDatabase, dependencies: LedgerDependencies = {}) {
     this.db = db;
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.createId =
       dependencies.createId ??
-      ((prefix: "aud" | "clm" | "evt" | "out") =>
-        `${prefix}_${randomUUID()}`);
+      ((prefix: LedgerIdPrefix) => `${prefix}_${randomUUID()}`);
   }
 
   addClaim(input: AddClaimInput): ClaimState {
@@ -124,6 +151,8 @@ export class MemLedger {
               subject,
               predicate,
               object,
+              project,
+              claim_type,
               author,
               session_id,
               trigger,
@@ -136,6 +165,8 @@ export class MemLedger {
               @subject,
               @predicate,
               @object,
+              @project,
+              @claim_type,
               @author,
               @session_id,
               @trigger,
@@ -151,6 +182,8 @@ export class MemLedger {
           subject: parsed.subject,
           predicate: parsed.predicate,
           object: parsed.object,
+          project: parsed.project ?? null,
+          claim_type: parsed.type ?? null,
           author: parsed.author,
           session_id: parsed.sessionId,
           trigger: parsed.trigger,
@@ -202,6 +235,8 @@ export class MemLedger {
             c.subject,
             c.predicate,
             c.object,
+            c.project,
+            c.claim_type,
             c.author,
             c.session_id,
             c.trigger,
@@ -372,6 +407,9 @@ export class MemLedger {
       const supersedeOutcomeId = this.createId("out");
       const createdAt = this.now();
       const reason = parsed.reason ?? null;
+      const project =
+        parsed.project !== undefined ? parsed.project : previousClaim.project;
+      const type = parsed.type !== undefined ? parsed.type : previousClaim.type;
 
       this.db
         .prepare(
@@ -381,6 +419,8 @@ export class MemLedger {
               subject,
               predicate,
               object,
+              project,
+              claim_type,
               author,
               session_id,
               trigger,
@@ -393,6 +433,8 @@ export class MemLedger {
               @subject,
               @predicate,
               @object,
+              @project,
+              @claim_type,
               @author,
               @session_id,
               @trigger,
@@ -408,6 +450,8 @@ export class MemLedger {
           subject: parsed.subject,
           predicate: parsed.predicate,
           object: parsed.object,
+          project,
+          claim_type: type,
           author: parsed.author,
           session_id: parsed.sessionId,
           trigger: parsed.trigger,
@@ -540,6 +584,148 @@ export class MemLedger {
     return rows.map((row) => this.mapEventRow(row));
   }
 
+  searchClaims(input: SearchClaimsInput): ClaimSearchResult {
+    const parsed = searchClaimsInputSchema.parse({
+      query: input.query,
+      project: input.project ?? null,
+      type: input.type ?? null,
+      limit: input.limit ?? 10
+    });
+    const tokens = tokenizeSearchText(parsed.query);
+
+    if (tokens.length === 0) {
+      throw new Error("Search query must contain at least one searchable token.");
+    }
+
+    const matchedClaims = this.listClaims({ status: "all" })
+      .map((claim) => ({
+        claim,
+        score: scoreClaim(tokens, claim)
+      }))
+      .filter((match) => match.score > 0)
+      .sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+
+        const createdAtComparison = right.claim.createdAt.localeCompare(
+          left.claim.createdAt
+        );
+
+        if (createdAtComparison !== 0) {
+          return createdAtComparison;
+        }
+
+        return right.claim.id.localeCompare(left.claim.id);
+      });
+
+    const included: ClaimState[] = [];
+    const excluded: ClaimSearchResult["excluded"] = [];
+
+    for (const { claim } of matchedClaims) {
+      const reasons = getExclusionReasons(claim, {
+        project: parsed.project ?? null,
+        type: parsed.type ?? null
+      });
+
+      if (reasons.length === 0 && included.length >= parsed.limit) {
+        reasons.push("limit");
+      }
+
+      if (reasons.length === 0) {
+        included.push(claim);
+      } else {
+        excluded.push({
+          claim,
+          reasons
+        });
+      }
+    }
+
+    return {
+      query: parsed.query,
+      retrievalMethod: RETRIEVAL_METHOD,
+      filters: {
+        project: parsed.project ?? null,
+        type: parsed.type ?? null
+      },
+      limit: parsed.limit,
+      included,
+      excluded
+    };
+  }
+
+  generateContextPack(input: GenerateContextPackInput): ContextPack {
+    const parsed = generateContextPackInputSchema.parse({
+      query: input.query,
+      project: input.project ?? null,
+      type: input.type ?? null,
+      limit: input.limit ?? 10,
+      outputFormat: input.outputFormat ?? "markdown"
+    });
+
+    return this.db.transaction(() => {
+      const search = this.searchClaims({
+        query: parsed.query,
+        project: parsed.project ?? null,
+        type: parsed.type ?? null,
+        limit: parsed.limit
+      });
+
+      const receipt = this.insertMemoryUseReceipt({
+        query: search.query,
+        filters: search.filters,
+        includedClaimIds: search.included.map((claim) => claim.id),
+        excludedClaimIds: search.excluded.map((entry) => entry.claim.id),
+        exclusionReasons: Object.fromEntries(
+          search.excluded.map((entry) => [entry.claim.id, entry.reasons])
+        ),
+        outputFormat: parsed.outputFormat
+      });
+
+      return {
+        receipt,
+        search,
+        outputFormat: parsed.outputFormat
+      };
+    })();
+  }
+
+  listMemoryUseReceipts(): MemoryUseReceipt[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            created_at,
+            query,
+            retrieval_method,
+            retrieval_version,
+            filters_json,
+            included_claim_ids_json,
+            excluded_claim_ids_json,
+            exclusion_reasons_json,
+            output_format,
+            schema_version
+          FROM memory_use_receipts
+          ORDER BY created_at DESC, id DESC
+        `
+      )
+      .all() as MemoryUseReceiptRow[];
+
+    return rows.map((row) => this.mapMemoryUseReceiptRow(row));
+  }
+
+  getMemoryUseReceipt(receiptId: string): MemoryUseReceipt {
+    const receipt = this.findMemoryUseReceipt(receiptId);
+
+    if (!receipt) {
+      throw new Error(`Receipt ${receiptId} was not found.`);
+    }
+
+    return receipt;
+  }
+
   private findClaimState(claimId: string): ClaimState | null {
     const row = this.db
       .prepare(
@@ -549,6 +735,8 @@ export class MemLedger {
             c.subject,
             c.predicate,
             c.object,
+            c.project,
+            c.claim_type,
             c.author,
             c.session_id,
             c.trigger,
@@ -736,6 +924,126 @@ export class MemLedger {
       });
   }
 
+  private insertMemoryUseReceipt(input: {
+    query: string;
+    filters: MemoryUseReceipt["filters"];
+    includedClaimIds: string[];
+    excludedClaimIds: string[];
+    exclusionReasons: MemoryUseReceipt["exclusionReasons"];
+    outputFormat: MemoryUseReceipt["outputFormat"];
+  }): MemoryUseReceipt {
+    const receiptId = this.createId("rcp");
+    const eventId = this.createId("evt");
+    const createdAt = this.now();
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO memory_use_receipts (
+            id,
+            created_at,
+            query,
+            retrieval_method,
+            retrieval_version,
+            filters_json,
+            included_claim_ids_json,
+            excluded_claim_ids_json,
+            exclusion_reasons_json,
+            output_format,
+            schema_version
+          ) VALUES (
+            @id,
+            @created_at,
+            @query,
+            @retrieval_method,
+            @retrieval_version,
+            @filters_json,
+            @included_claim_ids_json,
+            @excluded_claim_ids_json,
+            @exclusion_reasons_json,
+            @output_format,
+            @schema_version
+          )
+        `
+      )
+      .run({
+        id: receiptId,
+        created_at: createdAt,
+        query: input.query,
+        retrieval_method: RETRIEVAL_METHOD,
+        retrieval_version: RETRIEVAL_METHOD,
+        filters_json: JSON.stringify(input.filters),
+        included_claim_ids_json: JSON.stringify(input.includedClaimIds),
+        excluded_claim_ids_json: JSON.stringify(input.excludedClaimIds),
+        exclusion_reasons_json: JSON.stringify(input.exclusionReasons),
+        output_format: input.outputFormat,
+        schema_version: MEMORY_USE_RECEIPT_SCHEMA_VERSION
+      });
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO memory_use_receipt_events (
+            id,
+            receipt_id,
+            event_type,
+            created_at,
+            payload_json
+          ) VALUES (
+            @id,
+            @receipt_id,
+            @event_type,
+            @created_at,
+            @payload_json
+          )
+        `
+      )
+      .run({
+        id: eventId,
+        receipt_id: receiptId,
+        event_type: "memory_use_receipt_created",
+        created_at: createdAt,
+        payload_json: JSON.stringify({
+          eventType: "memory_use_receipt_created",
+          receiptId,
+          retrievalMethod: RETRIEVAL_METHOD,
+          includedClaimIds: input.includedClaimIds,
+          excludedClaimIds: input.excludedClaimIds
+        })
+      });
+
+    return this.getMemoryUseReceipt(receiptId);
+  }
+
+  private findMemoryUseReceipt(receiptId: string): MemoryUseReceipt | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            created_at,
+            query,
+            retrieval_method,
+            retrieval_version,
+            filters_json,
+            included_claim_ids_json,
+            excluded_claim_ids_json,
+            exclusion_reasons_json,
+            output_format,
+            schema_version
+          FROM memory_use_receipts
+          WHERE id = ?
+        `
+      )
+      .get(receiptId) as MemoryUseReceiptRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return this.mapMemoryUseReceiptRow(row);
+  }
+
   private requireEvent(eventId: string): LedgerEvent {
     const row = this.db
       .prepare(
@@ -871,6 +1179,8 @@ export class MemLedger {
       subject: parsedRow.subject,
       predicate: parsedRow.predicate,
       object: parsedRow.object,
+      project: parsedRow.project,
+      type: parsedRow.claim_type,
       author: parsedRow.author,
       sessionId: parsedRow.session_id,
       trigger: parsedRow.trigger,
@@ -941,4 +1251,92 @@ export class MemLedger {
       createdAt: parsedRow.created_at
     });
   }
+
+  private mapMemoryUseReceiptRow(row: unknown): MemoryUseReceipt {
+    const parsedRow = memoryUseReceiptRowSchema.parse(row);
+
+    return memoryUseReceiptSchema.parse({
+      id: parsedRow.id,
+      createdAt: parsedRow.created_at,
+      query: parsedRow.query,
+      retrievalMethod: parsedRow.retrieval_method,
+      retrievalVersion: parsedRow.retrieval_version,
+      filters: JSON.parse(parsedRow.filters_json),
+      includedClaimIds: JSON.parse(parsedRow.included_claim_ids_json),
+      excludedClaimIds: JSON.parse(parsedRow.excluded_claim_ids_json),
+      exclusionReasons: JSON.parse(parsedRow.exclusion_reasons_json),
+      outputFormat: parsedRow.output_format,
+      schemaVersion: parsedRow.schema_version
+    });
+  }
+}
+
+function tokenizeSearchText(value: string): string[] {
+  const tokens = value.toLowerCase().match(/[a-z0-9]+/g);
+
+  if (!tokens) {
+    return [];
+  }
+
+  return Array.from(new Set(tokens));
+}
+
+function scoreClaim(tokens: string[], claim: ClaimState): number {
+  const claimTokens = new Set(
+    tokenizeSearchText(
+      [
+        claim.id,
+        claim.subject,
+        claim.predicate,
+        claim.object,
+        claim.project,
+        claim.type,
+        claim.author,
+        claim.sessionId,
+        claim.trigger
+      ]
+        .filter((value): value is string => typeof value === "string")
+        .join(" ")
+    )
+  );
+
+  return tokens.reduce(
+    (score, token) => score + (claimTokens.has(token) ? 1 : 0),
+    0
+  );
+}
+
+function getExclusionReasons(
+  claim: ClaimState,
+  filters: { project: string | null; type: string | null }
+): ClaimExclusionReason[] {
+  const reasons: ClaimExclusionReason[] = [];
+
+  if (claim.supersededByClaimId !== null) {
+    reasons.push("superseded");
+  }
+
+  if (claim.contested) {
+    reasons.push("contested");
+  }
+
+  if (
+    filters.project !== null &&
+    normalizeFilterValue(claim.project) !== normalizeFilterValue(filters.project)
+  ) {
+    reasons.push("project_mismatch");
+  }
+
+  if (
+    filters.type !== null &&
+    normalizeFilterValue(claim.type) !== normalizeFilterValue(filters.type)
+  ) {
+    reasons.push("type_mismatch");
+  }
+
+  return reasons;
+}
+
+function normalizeFilterValue(value: string | null): string | null {
+  return value === null ? null : value.toLowerCase();
 }

@@ -43,6 +43,25 @@ export const CLAIM_STATUS_FILTERS = [
 
 export type ClaimStatusFilter = (typeof CLAIM_STATUS_FILTERS)[number];
 
+export const CONTEXT_PACK_FORMATS = ["markdown", "json"] as const;
+
+export type ContextPackFormat = (typeof CONTEXT_PACK_FORMATS)[number];
+
+export const SEARCH_OUTPUT_FORMATS = ["text", "json"] as const;
+
+export type SearchOutputFormat = (typeof SEARCH_OUTPUT_FORMATS)[number];
+
+export const CLAIM_EXCLUSION_REASONS = [
+  "superseded",
+  "contested",
+  "project_mismatch",
+  "type_mismatch",
+  "limit"
+] as const;
+
+export type ClaimExclusionReason =
+  (typeof CLAIM_EXCLUSION_REASONS)[number];
+
 export const CLAIM_AUDIT_VERDICTS = [
   "supports",
   "questions",
@@ -75,6 +94,8 @@ export interface OutcomeTrackingStub {
 
 export interface ClaimRecord extends ClaimParts {
   id: string;
+  project: string | null;
+  type: string | null;
   author: string;
   sessionId: string;
   trigger: ClaimTrigger;
@@ -128,6 +149,8 @@ export interface LedgerEvent {
 }
 
 export interface AddClaimInput extends ClaimParts {
+  project?: string | null;
+  type?: string | null;
   author: string;
   sessionId: string;
   trigger: ClaimTrigger;
@@ -143,6 +166,8 @@ export interface ContestClaimInput {
 
 export interface SupersedeClaimInput extends ClaimParts {
   targetClaimId: string;
+  project?: string | null;
+  type?: string | null;
   author: string;
   sessionId: string;
   trigger?: ClaimTrigger;
@@ -197,4 +222,54 @@ export interface ClaimHistory {
   events: LedgerEvent[];
   outcomes: MemoryOutcome[];
   audits: ClaimAudit[];
+}
+
+export interface ClaimRetrievalFilters {
+  project: string | null;
+  type: string | null;
+}
+
+export interface SearchClaimsInput {
+  query: string;
+  project?: string | null;
+  type?: string | null;
+  limit?: number;
+}
+
+export interface ExcludedClaimSearchResult {
+  claim: ClaimState;
+  reasons: ClaimExclusionReason[];
+}
+
+export interface ClaimSearchResult {
+  query: string;
+  retrievalMethod: "deterministic_keyword_v1";
+  filters: ClaimRetrievalFilters;
+  limit: number;
+  included: ClaimState[];
+  excluded: ExcludedClaimSearchResult[];
+}
+
+export interface MemoryUseReceipt {
+  id: string;
+  createdAt: string;
+  query: string;
+  retrievalMethod: "deterministic_keyword_v1";
+  retrievalVersion: "deterministic_keyword_v1";
+  filters: ClaimRetrievalFilters;
+  includedClaimIds: string[];
+  excludedClaimIds: string[];
+  exclusionReasons: Record<string, ClaimExclusionReason[]>;
+  outputFormat: ContextPackFormat;
+  schemaVersion: 1;
+}
+
+export interface GenerateContextPackInput extends SearchClaimsInput {
+  outputFormat?: ContextPackFormat;
+}
+
+export interface ContextPack {
+  receipt: MemoryUseReceipt;
+  search: ClaimSearchResult;
+  outputFormat: ContextPackFormat;
 }

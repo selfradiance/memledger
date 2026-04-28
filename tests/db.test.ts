@@ -32,6 +32,8 @@ describe("db", () => {
       expect(tableNames).toContain("claim_audits");
       expect(tableNames).toContain("events");
       expect(tableNames).toContain("memory_outcomes");
+      expect(tableNames).toContain("memory_use_receipt_events");
+      expect(tableNames).toContain("memory_use_receipts");
     } finally {
       db.close();
     }
@@ -123,6 +125,44 @@ describe("db", () => {
           .prepare("DELETE FROM claim_audits WHERE id = ?")
           .run("aud_manual_1")
       ).toThrowError(/append-only/i);
+
+      const pack = ledger.generateContextPack({ query: "oat" });
+      const receiptEventId = db
+        .prepare(
+          `
+            SELECT id
+            FROM memory_use_receipt_events
+            WHERE receipt_id = ?
+          `
+        )
+        .pluck()
+        .get(pack.receipt.id);
+
+      expect(() =>
+        db
+          .prepare("UPDATE memory_use_receipts SET query = ? WHERE id = ?")
+          .run("changed", pack.receipt.id)
+      ).toThrowError(/append-only/i);
+
+      expect(() =>
+        db
+          .prepare("DELETE FROM memory_use_receipts WHERE id = ?")
+          .run(pack.receipt.id)
+      ).toThrowError(/append-only/i);
+
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE memory_use_receipt_events SET event_type = ? WHERE id = ?"
+          )
+          .run("memory_use_receipt_created", receiptEventId)
+      ).toThrowError(/immutable/i);
+
+      expect(() =>
+        db
+          .prepare("DELETE FROM memory_use_receipt_events WHERE id = ?")
+          .run(receiptEventId)
+      ).toThrowError(/immutable/i);
     } finally {
       close();
     }
@@ -423,6 +463,7 @@ describe("db", () => {
 
       expect(version).toBe(CURRENT_SCHEMA_VERSION);
       expect(tableNames).toContain("memory_outcomes");
+      expect(tableNames).toContain("memory_use_receipts");
     } finally {
       db.close();
     }
@@ -696,6 +737,40 @@ describe("db", () => {
       expect(version).toBe(CURRENT_SCHEMA_VERSION);
       expect(claimCount).toBe(1);
       expect(tableNames).toContain("claim_audits");
+      expect(tableNames).toContain("memory_use_receipts");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a version 5 database forward and adds receipt storage", () => {
+    const db = createVersion5Database();
+
+    try {
+      migrateDatabase(db);
+
+      const version = Number(db.pragma("user_version", { simple: true }));
+      const tableNames = (
+        db
+          .prepare(
+            `
+              SELECT name
+              FROM sqlite_master
+              WHERE type = 'table'
+              ORDER BY name
+            `
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const claimColumns = (
+        db.prepare("PRAGMA table_info(claims)").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+
+      expect(version).toBe(CURRENT_SCHEMA_VERSION);
+      expect(tableNames).toContain("memory_use_receipts");
+      expect(tableNames).toContain("memory_use_receipt_events");
+      expect(claimColumns).toContain("project");
+      expect(claimColumns).toContain("claim_type");
     } finally {
       db.close();
     }
@@ -857,6 +932,46 @@ function createVersion4Database(): Database.Database {
   `);
 
   db.pragma("user_version = 4");
+
+  return db;
+}
+
+function createVersion5Database(): Database.Database {
+  const db = createVersion4Database();
+
+  db.exec(`
+    CREATE TABLE claim_audits (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT NOT NULL REFERENCES claims(id),
+      auditor TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (
+        verdict IN ('supports', 'questions', 'rejects', 'insufficient_evidence')
+      ),
+      reason TEXT NOT NULL,
+      evidence_note TEXT,
+      recommended_action TEXT NOT NULL CHECK (
+        recommended_action IN ('none', 'contest', 'supersede', 'manual_correction')
+      ),
+      created_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX idx_claim_audits_claim_created
+      ON claim_audits(claim_id, created_at ASC, id ASC);
+
+    CREATE TRIGGER claim_audits_no_update
+    BEFORE UPDATE ON claim_audits
+    BEGIN
+      SELECT RAISE(ABORT, 'claim audits are append-only');
+    END;
+
+    CREATE TRIGGER claim_audits_no_delete
+    BEFORE DELETE ON claim_audits
+    BEGIN
+      SELECT RAISE(ABORT, 'claim audits are append-only');
+    END;
+  `);
+
+  db.pragma("user_version = 5");
 
   return db;
 }

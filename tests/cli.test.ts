@@ -630,4 +630,217 @@ describe("cli", () => {
     expect(harness.stdout.join("")).toContain("auditor=review.bot");
     expect(harness.stdout.join("")).toContain("verdict=questions");
   });
+
+  it("searches active claims and reports excluded contested matches", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    const addActiveExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "user.preference",
+        "--predicate",
+        "prefers",
+        "--object",
+        "oat milk",
+        "--project",
+        "prefs",
+        "--type",
+        "preference",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "assumption",
+        "--confidence",
+        "0.7"
+      ],
+      harness.dependencies
+    );
+    const activeId = harness.stdout.join("").match(/added (clm_\d+)/)?.[1];
+
+    const addContestedExitCode = runCli(
+      [
+        "add",
+        "--subject",
+        "user.preference",
+        "--predicate",
+        "prefers",
+        "--object",
+        "oat biscuits",
+        "--project",
+        "prefs",
+        "--type",
+        "preference",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-2",
+        "--trigger",
+        "assumption",
+        "--confidence",
+        "0.6"
+      ],
+      harness.dependencies
+    );
+    const ids = harness.stdout.join("").match(/added (clm_\d+)/g) ?? [];
+    const contestedId = ids[1]?.replace("added ", "");
+
+    expect(addActiveExitCode).toBe(0);
+    expect(addContestedExitCode).toBe(0);
+    expect(activeId).toBeDefined();
+    expect(contestedId).toBeDefined();
+
+    const contestExitCode = runCli(
+      [
+        "contest",
+        "--id",
+        contestedId as string,
+        "--actor",
+        "agent.beta",
+        "--session",
+        "sess-3",
+        "--reason",
+        "User corrected this."
+      ],
+      harness.dependencies
+    );
+    const searchExitCode = runCli(
+      [
+        "search",
+        "--query",
+        "oat",
+        "--project",
+        "prefs",
+        "--type",
+        "preference"
+      ],
+      harness.dependencies
+    );
+
+    const output = harness.stdout.join("");
+    expect(contestExitCode).toBe(0);
+    expect(searchExitCode).toBe(0);
+    expect(output).toContain(`- ${activeId as string} - user.preference prefers oat milk`);
+    expect(output).toContain(
+      `- ${contestedId as string} - excluded: contested - user.preference prefers oat biscuits`
+    );
+  });
+
+  it("prints stable JSON search output", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const searchExitCode = runCli(
+      ["search", "--query", "blocked", "--format", "json"],
+      harness.dependencies
+    );
+    const lastOutput = harness.stdout[harness.stdout.length - 1];
+
+    expect(searchExitCode).toBe(0);
+    expect(lastOutput).toBeDefined();
+
+    const parsed = JSON.parse(lastOutput as string) as {
+      retrievalMethod: string;
+      includedClaims: Array<{ statement: string }>;
+    };
+
+    expect(parsed.retrievalMethod).toBe("deterministic_keyword_v1");
+    expect(parsed.includedClaims[0]?.statement).toBe("project.status is blocked");
+  });
+
+  it("generates a context pack and exposes memory-use receipts", () => {
+    const harness = createCliHarness();
+    cleanups.push(harness.close);
+
+    runCli(
+      [
+        "add",
+        "--subject",
+        "project.status",
+        "--predicate",
+        "is",
+        "--object",
+        "blocked",
+        "--project",
+        "memledger",
+        "--type",
+        "status",
+        "--author",
+        "agent.alpha",
+        "--session",
+        "sess-1",
+        "--trigger",
+        "inference",
+        "--confidence",
+        "0.4"
+      ],
+      harness.dependencies
+    );
+
+    const contextExitCode = runCli(
+      [
+        "context-pack",
+        "--query",
+        "blocked",
+        "--project",
+        "memledger",
+        "--type",
+        "status",
+        "--format",
+        "json"
+      ],
+      harness.dependencies
+    );
+    const contextOutput = harness.stdout[harness.stdout.length - 1];
+
+    expect(contextExitCode).toBe(0);
+    expect(contextOutput).toBeDefined();
+
+    const parsedContext = JSON.parse(contextOutput as string) as {
+      receipt: { receipt_id: string; included_claim_ids: string[] };
+      includedClaims: Array<{ id: string }>;
+    };
+
+    expect(parsedContext.receipt.receipt_id).toMatch(/^rcp_/);
+    expect(parsedContext.receipt.included_claim_ids).toEqual([
+      parsedContext.includedClaims[0]?.id
+    ]);
+
+    const listExitCode = runCli(["receipts-list"], harness.dependencies);
+    const showExitCode = runCli(
+      ["receipts-show", "--id", parsedContext.receipt.receipt_id],
+      harness.dependencies
+    );
+    const output = harness.stdout.join("");
+
+    expect(listExitCode).toBe(0);
+    expect(showExitCode).toBe(0);
+    expect(output).toContain(`receipt=${parsedContext.receipt.receipt_id}`);
+    expect(output).toContain("query: blocked");
+    expect(output).toContain("includedClaimIds");
+  });
 });

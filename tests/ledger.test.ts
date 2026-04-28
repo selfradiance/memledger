@@ -524,6 +524,207 @@ describe("ledger", () => {
     }
   });
 
+  it("searches matching active claims deterministically", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const matching = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        project: "prefs",
+        type: "preference",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+      ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        project: "work",
+        type: "status",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      const result = ledger.searchClaims({
+        query: "oat",
+        project: "prefs",
+        type: "preference"
+      });
+
+      expect(result.retrievalMethod).toBe("deterministic_keyword_v1");
+      expect(result.included.map((claim) => claim.id)).toEqual([matching.id]);
+      expect(result.excluded).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
+  it("search does not treat superseded claims as active", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const original = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      ledger.supersedeClaim({
+        targetClaimId: original.id,
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "soy milk",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        confidence: 0.95
+      });
+
+      const result = ledger.searchClaims({ query: "oat" });
+
+      expect(result.included.map((claim) => claim.id)).not.toContain(original.id);
+      expect(result.excluded).toEqual([
+        {
+          claim: expect.objectContaining({ id: original.id }),
+          reasons: ["superseded"]
+        }
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("search does not treat contested claims as active", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+
+      ledger.contestClaim({
+        claimId: claim.id,
+        actor: "agent.beta",
+        sessionId: "sess-2",
+        reason: "User corrected this later."
+      });
+
+      const result = ledger.searchClaims({ query: "oat" });
+
+      expect(result.included).toEqual([]);
+      expect(result.excluded).toEqual([
+        {
+          claim: expect.objectContaining({ id: claim.id }),
+          reasons: ["contested"]
+        }
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("generates a context pack with active matching claims and exclusions", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const active = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat milk",
+        project: "prefs",
+        type: "preference",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "assumption",
+        confidence: 0.7
+      });
+      const contested = ledger.addClaim({
+        subject: "user.preference",
+        predicate: "prefers",
+        object: "oat biscuits",
+        project: "prefs",
+        type: "preference",
+        author: "agent.alpha",
+        sessionId: "sess-2",
+        trigger: "assumption",
+        confidence: 0.6
+      });
+      ledger.contestClaim({
+        claimId: contested.id,
+        actor: "agent.beta",
+        sessionId: "sess-3",
+        reason: "User corrected this."
+      });
+
+      const pack = ledger.generateContextPack({
+        query: "oat",
+        project: "prefs",
+        type: "preference",
+        outputFormat: "markdown"
+      });
+
+      expect(pack.search.included.map((claim) => claim.id)).toEqual([active.id]);
+      expect(pack.search.excluded).toEqual([
+        {
+          claim: expect.objectContaining({ id: contested.id }),
+          reasons: ["contested"]
+        }
+      ]);
+      expect(pack.receipt.includedClaimIds).toEqual([active.id]);
+      expect(pack.receipt.excludedClaimIds).toEqual([contested.id]);
+      expect(pack.receipt.exclusionReasons).toEqual({
+        [contested.id]: ["contested"]
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("writes append-only memory-use receipts for context packs", () => {
+    const { ledger, close } = createTestLedger();
+
+    try {
+      const claim = ledger.addClaim({
+        subject: "project.status",
+        predicate: "is",
+        object: "blocked",
+        author: "agent.alpha",
+        sessionId: "sess-1",
+        trigger: "inference",
+        confidence: 0.4
+      });
+
+      const pack = ledger.generateContextPack({
+        query: "blocked",
+        outputFormat: "json"
+      });
+      const receipts = ledger.listMemoryUseReceipts();
+      const receipt = ledger.getMemoryUseReceipt(pack.receipt.id);
+
+      expect(receipts.map((entry) => entry.id)).toEqual([pack.receipt.id]);
+      expect(receipt.query).toBe("blocked");
+      expect(receipt.outputFormat).toBe("json");
+      expect(receipt.includedClaimIds).toEqual([claim.id]);
+    } finally {
+      close();
+    }
+  });
+
   it("supersedes a claim by creating a new claim and a supersede event", () => {
     const { ledger, close } = createTestLedger();
 

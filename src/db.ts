@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 
 export type SqliteDatabase = Database.Database;
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export function openDatabase(databasePath: string): SqliteDatabase {
   if (databasePath !== ":memory:") {
@@ -40,6 +40,7 @@ export function migrateDatabase(db: SqliteDatabase): void {
       createBaseSchema(db);
       createMemoryOutcomesSchema(db);
       createClaimAuditsSchema(db);
+      createMemoryUseReceiptsSchema(db);
       db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
       return;
     }
@@ -59,9 +60,8 @@ export function migrateDatabase(db: SqliteDatabase): void {
 
     if (currentVersion === 2) {
       createMemoryOutcomesSchema(db);
-      createClaimAuditsSchema(db);
-      db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
-      return;
+      currentVersion = 4;
+      db.pragma("user_version = 4");
     }
 
     if (currentVersion === 3) {
@@ -92,13 +92,19 @@ export function migrateDatabase(db: SqliteDatabase): void {
         ALTER TABLE memory_outcomes_v4 RENAME TO memory_outcomes;
       `);
       createMemoryOutcomesArtifacts(db);
-      createClaimAuditsSchema(db);
-      db.pragma("user_version = 5");
-      return;
+      currentVersion = 4;
+      db.pragma("user_version = 4");
     }
 
     if (currentVersion === 4) {
       createClaimAuditsSchema(db);
+      currentVersion = 5;
+      db.pragma("user_version = 5");
+    }
+
+    if (currentVersion === 5) {
+      addClaimMetadataColumns(db);
+      createMemoryUseReceiptsSchema(db);
       db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
       return;
     }
@@ -118,6 +124,8 @@ function createBaseSchema(db: SqliteDatabase): void {
       subject TEXT NOT NULL,
       predicate TEXT NOT NULL,
       object TEXT NOT NULL,
+      project TEXT,
+      claim_type TEXT,
       author TEXT NOT NULL,
       session_id TEXT NOT NULL,
       trigger TEXT NOT NULL CHECK (
@@ -145,6 +153,12 @@ function createBaseSchema(db: SqliteDatabase): void {
 
     CREATE INDEX idx_claims_created_at
       ON claims(created_at DESC, id DESC);
+
+    CREATE INDEX idx_claims_project
+      ON claims(project);
+
+    CREATE INDEX idx_claims_type
+      ON claims(claim_type);
 
     CREATE UNIQUE INDEX idx_claims_single_child_supersede
       ON claims(supersedes_claim_id)
@@ -179,6 +193,19 @@ function createBaseSchema(db: SqliteDatabase): void {
     BEGIN
       SELECT RAISE(ABORT, 'events are immutable');
     END;
+  `);
+}
+
+function addClaimMetadataColumns(db: SqliteDatabase): void {
+  db.exec(`
+    ALTER TABLE claims ADD COLUMN project TEXT;
+    ALTER TABLE claims ADD COLUMN claim_type TEXT;
+
+    CREATE INDEX idx_claims_project
+      ON claims(project);
+
+    CREATE INDEX idx_claims_type
+      ON claims(claim_type);
   `);
 }
 
@@ -217,6 +244,70 @@ function createClaimAuditsSchema(db: SqliteDatabase): void {
     BEFORE DELETE ON claim_audits
     BEGIN
       SELECT RAISE(ABORT, 'claim audits are append-only');
+    END;
+  `);
+}
+
+function createMemoryUseReceiptsSchema(db: SqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE memory_use_receipts (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      query TEXT NOT NULL,
+      retrieval_method TEXT NOT NULL CHECK (
+        retrieval_method IN ('deterministic_keyword_v1')
+      ),
+      retrieval_version TEXT NOT NULL CHECK (
+        retrieval_version IN ('deterministic_keyword_v1')
+      ),
+      filters_json TEXT NOT NULL CHECK (json_valid(filters_json)),
+      included_claim_ids_json TEXT NOT NULL CHECK (json_valid(included_claim_ids_json)),
+      excluded_claim_ids_json TEXT NOT NULL CHECK (json_valid(excluded_claim_ids_json)),
+      exclusion_reasons_json TEXT NOT NULL CHECK (json_valid(exclusion_reasons_json)),
+      output_format TEXT NOT NULL CHECK (
+        output_format IN ('markdown', 'json')
+      ),
+      schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+    ) STRICT;
+
+    CREATE TABLE memory_use_receipt_events (
+      id TEXT PRIMARY KEY,
+      receipt_id TEXT NOT NULL REFERENCES memory_use_receipts(id),
+      event_type TEXT NOT NULL CHECK (
+        event_type IN ('memory_use_receipt_created')
+      ),
+      created_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
+    ) STRICT;
+
+    CREATE INDEX idx_memory_use_receipts_created
+      ON memory_use_receipts(created_at DESC, id DESC);
+
+    CREATE INDEX idx_memory_use_receipt_events_receipt
+      ON memory_use_receipt_events(receipt_id, created_at ASC, id ASC);
+
+    CREATE TRIGGER memory_use_receipts_no_update
+    BEFORE UPDATE ON memory_use_receipts
+    BEGIN
+      SELECT RAISE(ABORT, 'memory use receipts are append-only');
+    END;
+
+    CREATE TRIGGER memory_use_receipts_no_delete
+    BEFORE DELETE ON memory_use_receipts
+    BEGIN
+      SELECT RAISE(ABORT, 'memory use receipts are append-only');
+    END;
+
+    CREATE TRIGGER memory_use_receipt_events_no_update
+    BEFORE UPDATE ON memory_use_receipt_events
+    BEGIN
+      SELECT RAISE(ABORT, 'memory use receipt events are immutable');
+    END;
+
+    CREATE TRIGGER memory_use_receipt_events_no_delete
+    BEFORE DELETE ON memory_use_receipt_events
+    BEGIN
+      SELECT RAISE(ABORT, 'memory use receipt events are immutable');
     END;
   `);
 }

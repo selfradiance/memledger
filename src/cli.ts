@@ -6,12 +6,18 @@ import {
   formatClaimAudit,
   formatClaimAuditList,
   formatClaim,
+  formatContextPackJson,
+  formatContextPackMarkdown,
   formatClaimReport,
   formatClaimHistory,
   formatClaimList,
   formatEvent,
   formatLedgerHistory,
-  formatMemoryOutcome
+  formatMemoryOutcome,
+  formatMemoryUseReceipt,
+  formatMemoryUseReceiptList,
+  formatSearchResults,
+  formatSearchResultsJson
 } from "./formatter.js";
 import { MemLedger } from "./ledger.js";
 import {
@@ -19,22 +25,29 @@ import {
   claimAuditVerdictSchema,
   claimStatusFilterSchema,
   claimTriggerSchema,
+  contextPackFormatSchema,
   confidenceSchema,
-  manualMemoryOutcomeEventTypeSchema
+  claimMetadataSchema,
+  manualMemoryOutcomeEventTypeSchema,
+  searchOutputFormatSchema
 } from "./schema.js";
 import {
   CLAIM_AUDIT_RECOMMENDED_ACTIONS,
   CLAIM_AUDIT_VERDICTS,
   CLAIM_STATUS_FILTERS,
   CLAIM_TRIGGERS,
-  MANUAL_MEMORY_OUTCOME_EVENT_TYPES
+  CONTEXT_PACK_FORMATS,
+  MANUAL_MEMORY_OUTCOME_EVENT_TYPES,
+  SEARCH_OUTPUT_FORMATS
 } from "./types.js";
 import type {
   ClaimAuditRecommendedAction,
   ClaimAuditVerdict,
   ClaimStatusFilter,
   ClaimTrigger,
-  ManualMemoryOutcomeEventType
+  ContextPackFormat,
+  ManualMemoryOutcomeEventType,
+  SearchOutputFormat
 } from "./types.js";
 
 export interface CliIo {
@@ -53,6 +66,10 @@ export interface CliDependencies {
       | "supersedeClaim"
       | "recordOutcome"
       | "auditClaim"
+      | "searchClaims"
+      | "generateContextPack"
+      | "listMemoryUseReceipts"
+      | "getMemoryUseReceipt"
       | "getClaimHistory"
       | "getClaimAudits"
       | "getLedgerHistory"
@@ -73,6 +90,8 @@ const COMMAND_OPTIONS = {
     "subject",
     "predicate",
     "object",
+    "project",
+    "type",
     "author",
     "session",
     "trigger",
@@ -87,6 +106,8 @@ const COMMAND_OPTIONS = {
     "subject",
     "predicate",
     "object",
+    "project",
+    "type",
     "author",
     "session",
     "trigger",
@@ -116,6 +137,26 @@ const COMMAND_OPTIONS = {
   ]),
   "show-audits": new Set(["claim-id", "db", "help"]),
   "show-claim": new Set(["id", "db", "help"]),
+  search: new Set([
+    "query",
+    "project",
+    "type",
+    "limit",
+    "format",
+    "db",
+    "help"
+  ]),
+  "context-pack": new Set([
+    "query",
+    "project",
+    "type",
+    "limit",
+    "format",
+    "db",
+    "help"
+  ]),
+  "receipts-list": new Set(["db", "help"]),
+  "receipts-show": new Set(["id", "db", "help"]),
   history: new Set(["id", "db", "help"]),
   help: new Set<string>()
 } as const;
@@ -177,6 +218,7 @@ export function runCli(
           subject: requireOption(parsed.options, "subject"),
           predicate: requireOption(parsed.options, "predicate"),
           object: requireOption(parsed.options, "object"),
+          ...parseOptionalClaimMetadata(parsed.options),
           author: requireOption(parsed.options, "author"),
           sessionId: requireOption(parsed.options, "session"),
           trigger: parseRequiredTrigger(parsed.options),
@@ -216,6 +258,7 @@ export function runCli(
           subject: requireOption(parsed.options, "subject"),
           predicate: requireOption(parsed.options, "predicate"),
           object: requireOption(parsed.options, "object"),
+          ...parseOptionalClaimMetadata(parsed.options),
           author: requireOption(parsed.options, "author"),
           sessionId: requireOption(parsed.options, "session"),
           ...(trigger !== undefined
@@ -287,6 +330,55 @@ export function runCli(
           requireOption(parsed.options, "id")
         );
         io.stdout(`${formatClaimReport(history)}\n`);
+        return 0;
+      }
+
+      case "search": {
+        const result = handle.ledger.searchClaims({
+          query: requireOption(parsed.options, "query"),
+          ...parseOptionalClaimMetadata(parsed.options),
+          limit: parseLimit(parsed.options)
+        });
+        const format = parseSearchOutputFormat(
+          parsed.options.get("format")
+        );
+
+        io.stdout(
+          format === "json"
+            ? formatSearchResultsJson(result)
+            : `${formatSearchResults(result)}\n`
+        );
+        return 0;
+      }
+
+      case "context-pack": {
+        const format = parseContextPackFormat(parsed.options.get("format"));
+        const pack = handle.ledger.generateContextPack({
+          query: requireOption(parsed.options, "query"),
+          ...parseOptionalClaimMetadata(parsed.options),
+          limit: parseLimit(parsed.options),
+          outputFormat: format
+        });
+
+        io.stdout(
+          format === "json"
+            ? formatContextPackJson(pack)
+            : `${formatContextPackMarkdown(pack)}\n`
+        );
+        return 0;
+      }
+
+      case "receipts-list": {
+        const receipts = handle.ledger.listMemoryUseReceipts();
+        io.stdout(`${formatMemoryUseReceiptList(receipts)}\n`);
+        return 0;
+      }
+
+      case "receipts-show": {
+        const receipt = handle.ledger.getMemoryUseReceipt(
+          requireOption(parsed.options, "id")
+        );
+        io.stdout(`${formatMemoryUseReceipt(receipt)}\n`);
         return 0;
       }
 
@@ -483,6 +575,96 @@ function parseStatus(raw: string | boolean | undefined): ClaimStatusFilter {
   return parsed.data;
 }
 
+function parseOptionalClaimMetadata(
+  options: Map<string, string | boolean>
+): { project?: string; type?: string } {
+  const metadata: { project?: string; type?: string } = {};
+  const project = getOptionalString(options, "project");
+  const type = getOptionalString(options, "type");
+
+  if (project !== undefined) {
+    const parsed = claimMetadataSchema.safeParse(project);
+
+    if (!parsed.success) {
+      throw new Error("Invalid project. Expected non-empty text up to 128 characters.");
+    }
+
+    metadata.project = parsed.data;
+  }
+
+  if (type !== undefined) {
+    const parsed = claimMetadataSchema.safeParse(type);
+
+    if (!parsed.success) {
+      throw new Error("Invalid type. Expected non-empty text up to 128 characters.");
+    }
+
+    metadata.type = parsed.data;
+  }
+
+  return metadata;
+}
+
+function parseLimit(options: Map<string, string | boolean>): number {
+  const raw = getOptionalString(options, "limit");
+
+  if (raw === undefined) {
+    return 10;
+  }
+
+  const parsedNumber = Number(raw);
+
+  if (!Number.isInteger(parsedNumber) || parsedNumber < 1 || parsedNumber > 100) {
+    throw new Error(`Invalid limit "${raw}". Expected an integer between 1 and 100.`);
+  }
+
+  return parsedNumber;
+}
+
+function parseContextPackFormat(
+  raw: string | boolean | undefined
+): ContextPackFormat {
+  if (raw === undefined) {
+    return "markdown";
+  }
+
+  if (typeof raw !== "string") {
+    throw new Error("Expected --format to have a value.");
+  }
+
+  const parsed = contextPackFormatSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid format "${raw}". Expected one of: ${CONTEXT_PACK_FORMATS.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
+}
+
+function parseSearchOutputFormat(
+  raw: string | boolean | undefined
+): SearchOutputFormat {
+  if (raw === undefined) {
+    return "text";
+  }
+
+  if (typeof raw !== "string") {
+    throw new Error("Expected --format to have a value.");
+  }
+
+  const parsed = searchOutputFormatSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid format "${raw}". Expected one of: ${SEARCH_OUTPUT_FORMATS.join(", ")}.`
+    );
+  }
+
+  return parsed.data;
+}
+
 function requireOption(
   options: Map<string, string | boolean>,
   name: string
@@ -534,14 +716,18 @@ function usageText(): string {
     "MemLedger v0.3",
     "",
     "Usage:",
-    "  memledger add --subject <text> --predicate <text> --object <text> --author <id> --session <id> --trigger <task_completion|correction|assumption|inference> --confidence <0..1> [--db <path>]",
+    "  memledger add --subject <text> --predicate <text> --object <text> --author <id> --session <id> --trigger <task_completion|correction|assumption|inference> --confidence <0..1> [--project <project>] [--type <type>] [--db <path>]",
     "  memledger list [--status <all|active|contested|superseded>] [--db <path>]",
     "  memledger contest --id <claim_id> --actor <id> --session <id> --reason <text> [--db <path>]",
-    "  memledger supersede --id <claim_id> --subject <text> --predicate <text> --object <text> --author <id> --session <id> --confidence <0..1> [--trigger <trigger>] [--reason <text>] [--db <path>]",
+    "  memledger supersede --id <claim_id> --subject <text> --predicate <text> --object <text> --author <id> --session <id> --confidence <0..1> [--project <project>] [--type <type>] [--trigger <trigger>] [--reason <text>] [--db <path>]",
     "  memledger record-outcome --id <claim_id> --event-type <observed_hold|observed_fail|manual_correction> --source <text> [--notes <text>] [--related-claim-id <claim_id>] [--db <path>]",
     "  memledger audit-claim --claim-id <claim_id> --auditor <id> --verdict <supports|questions|rejects|insufficient_evidence> --reason <text> [--evidence-note <text>] --recommended-action <none|contest|supersede|manual_correction> [--db <path>]",
     "  memledger show-audits --claim-id <claim_id> [--db <path>]",
     "  memledger show-claim --id <claim_id> [--db <path>]",
+    "  memledger search --query <text> [--project <project>] [--type <type>] [--limit <n>] [--format <text|json>] [--db <path>]",
+    "  memledger context-pack --query <text> [--project <project>] [--type <type>] [--limit <n>] [--format <markdown|json>] [--db <path>]",
+    "  memledger receipts-list [--db <path>]",
+    "  memledger receipts-show --id <receipt_id> [--db <path>]",
     "  memledger history [--id <claim_id>] [--db <path>]"
   ].join("\n");
 }

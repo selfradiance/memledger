@@ -3,14 +3,18 @@ import { z } from "zod";
 import {
   CLAIM_AUDIT_RECOMMENDED_ACTIONS,
   CLAIM_AUDIT_VERDICTS,
+  CLAIM_EXCLUSION_REASONS,
   CLAIM_STATUS_FILTERS,
   CLAIM_TRIGGERS,
+  CONTEXT_PACK_FORMATS,
   EVENT_TYPES,
   MANUAL_MEMORY_OUTCOME_EVENT_TYPES,
-  MEMORY_OUTCOME_EVENT_TYPES
+  MEMORY_OUTCOME_EVENT_TYPES,
+  SEARCH_OUTPUT_FORMATS
 } from "./types.js";
 
 const trimmedText = z.string().trim().min(1);
+const optionalMetadata = z.union([trimmedText.max(128), z.null()]).optional();
 
 export const idSchema = trimmedText.max(128);
 export const actorSchema = trimmedText.max(128);
@@ -20,6 +24,9 @@ export const reasonSchema = trimmedText.max(500);
 export const nullableReasonSchema = z.union([reasonSchema, z.null()]);
 export const isoTimestampSchema = z.string().datetime({ offset: true });
 export const confidenceSchema = z.number().finite().min(0).max(1);
+export const querySchema = trimmedText.max(500);
+export const retrievalLimitSchema = z.number().int().min(1).max(100);
+export const claimMetadataSchema = trimmedText.max(128);
 export const claimTriggerSchema = z.enum(CLAIM_TRIGGERS);
 export const eventTypeSchema = z.enum(EVENT_TYPES);
 export const memoryOutcomeEventTypeSchema = z.enum(MEMORY_OUTCOME_EVENT_TYPES);
@@ -27,6 +34,9 @@ export const manualMemoryOutcomeEventTypeSchema = z.enum(
   MANUAL_MEMORY_OUTCOME_EVENT_TYPES
 );
 export const claimStatusFilterSchema = z.enum(CLAIM_STATUS_FILTERS);
+export const claimExclusionReasonSchema = z.enum(CLAIM_EXCLUSION_REASONS);
+export const contextPackFormatSchema = z.enum(CONTEXT_PACK_FORMATS);
+export const searchOutputFormatSchema = z.enum(SEARCH_OUTPUT_FORMATS);
 export const claimAuditVerdictSchema = z.enum(CLAIM_AUDIT_VERDICTS);
 export const claimAuditRecommendedActionSchema = z.enum(
   CLAIM_AUDIT_RECOMMENDED_ACTIONS
@@ -45,6 +55,8 @@ export const outcomeTrackingStubSchema = z.object({
 
 export const claimRecordSchema = claimPartsSchema.extend({
   id: idSchema,
+  project: z.union([claimMetadataSchema, z.null()]),
+  type: z.union([claimMetadataSchema, z.null()]),
   author: actorSchema,
   sessionId: sessionIdSchema,
   trigger: claimTriggerSchema,
@@ -99,6 +111,8 @@ export const ledgerEventSchema = z.object({
 });
 
 export const addClaimInputSchema = claimPartsSchema.extend({
+  project: optionalMetadata,
+  type: optionalMetadata,
   author: actorSchema,
   sessionId: sessionIdSchema,
   trigger: claimTriggerSchema,
@@ -114,6 +128,8 @@ export const contestClaimInputSchema = z.object({
 
 export const supersedeClaimInputSchema = claimPartsSchema.extend({
   targetClaimId: idSchema,
+  project: optionalMetadata,
+  type: optionalMetadata,
   author: actorSchema,
   sessionId: sessionIdSchema,
   trigger: claimTriggerSchema.default("correction"),
@@ -153,11 +169,41 @@ export const listClaimsOptionsSchema = z.object({
   status: claimStatusFilterSchema.default("all")
 });
 
+export const searchClaimsInputSchema = z.object({
+  query: querySchema,
+  project: optionalMetadata,
+  type: optionalMetadata,
+  limit: retrievalLimitSchema.default(10)
+});
+
+export const generateContextPackInputSchema = searchClaimsInputSchema.extend({
+  outputFormat: contextPackFormatSchema.default("markdown")
+});
+
+export const memoryUseReceiptSchema = z.object({
+  id: idSchema,
+  createdAt: isoTimestampSchema,
+  query: querySchema,
+  retrievalMethod: z.literal("deterministic_keyword_v1"),
+  retrievalVersion: z.literal("deterministic_keyword_v1"),
+  filters: z.object({
+    project: z.union([claimMetadataSchema, z.null()]),
+    type: z.union([claimMetadataSchema, z.null()])
+  }),
+  includedClaimIds: z.array(idSchema),
+  excludedClaimIds: z.array(idSchema),
+  exclusionReasons: z.record(idSchema, z.array(claimExclusionReasonSchema)),
+  outputFormat: contextPackFormatSchema,
+  schemaVersion: z.literal(1)
+});
+
 export const claimRowSchema = z.object({
   id: idSchema,
   subject: trimmedText.max(200),
   predicate: trimmedText.max(120),
   object: trimmedText.max(500),
+  project: z.union([claimMetadataSchema, z.null()]),
+  claim_type: z.union([claimMetadataSchema, z.null()]),
   author: actorSchema,
   session_id: sessionIdSchema,
   trigger: claimTriggerSchema,
@@ -214,4 +260,18 @@ export const claimAuditRowSchema = z.object({
   evidence_note: z.union([reasonSchema, z.null()]),
   recommended_action: claimAuditRecommendedActionSchema,
   created_at: isoTimestampSchema
+});
+
+export const memoryUseReceiptRowSchema = z.object({
+  id: idSchema,
+  created_at: isoTimestampSchema,
+  query: querySchema,
+  retrieval_method: z.literal("deterministic_keyword_v1"),
+  retrieval_version: z.literal("deterministic_keyword_v1"),
+  filters_json: z.string().min(2),
+  included_claim_ids_json: z.string().min(2),
+  excluded_claim_ids_json: z.string().min(2),
+  exclusion_reasons_json: z.string().min(2),
+  output_format: contextPackFormatSchema,
+  schema_version: z.literal(1)
 });
