@@ -1,6 +1,6 @@
 # MemLedger
 
-MemLedger is a narrow v0.3.0 TypeScript CLI for structured, append-only memory claims, deterministic context packs, and append-only memory-use receipts.
+MemLedger is a narrow v0.4.0 TypeScript CLI for structured, append-only memory claims, deterministic context packs, and append-only memory-use receipts.
 
 It is intentionally small:
 
@@ -16,11 +16,15 @@ It is intentionally not a general AI memory platform.
 
 ## Status
 
-`v0.3.0`
+`v0.4.0`
 
-MemLedger v0.3 adds a local context-pack proof: assistant context can be assembled from inspectable memory claims, while superseded or contested claims are excluded or surfaced, and every context-pack generation emits an append-only memory-use receipt.
+MemLedger v0.4.0 adds deterministic claim search, context-pack generation, and append-only memory-use receipts.
 
-What v0.3 ships:
+Assistant context can be assembled from inspectable memory claims, while superseded or contested claims are excluded or surfaced, and every context-pack generation emits an append-only memory-use receipt.
+
+v0.3.0 remains the historical append-only claim-audits release.
+
+What v0.4 ships:
 
 - deterministic local search over memory claims
 - context-pack generation for assistant workflows
@@ -28,7 +32,7 @@ What v0.3 ships:
 - optional structured `project` and `type` claim metadata for deterministic filters
 - existing outcome logging, confidence recalculation, contest, supersede, and audit commands
 
-v0.3 remains local-first, deterministic, CLI-driven, and non-semantic.
+v0.4 remains local-first, deterministic, CLI-driven, and non-semantic.
 
 ## Scope
 
@@ -253,12 +257,18 @@ This is deterministic bookkeeping, not truth adjudication.
 
 ## Release Notes
 
-### v0.3.0 - Context Packs and Memory-Use Receipts
+### v0.4.0 - Context Packs and Memory-Use Receipts
 
 - Adds deterministic local search over memory claims.
 - Adds context-pack generation for assistant workflows.
 - Adds append-only memory-use receipts showing included and excluded claims.
 - Keeps scope local-first, deterministic, and non-semantic.
+
+### v0.3.0 - Append-Only Claim Audits
+
+- Added append-only claim audits attached to existing claims.
+- Added CLI support for recording and showing audits.
+- Kept audits advisory only, without automatic confidence changes, contests, or supersessions.
 
 ## Development
 
@@ -268,7 +278,7 @@ npm run typecheck
 npm run build
 ```
 
-## Notes On v0.3 Behavior
+## Notes On v0.4 Behavior
 
 - Database triggers block updates and deletes on `claims`, `events`, `memory_outcomes`, `claim_audits`, `memory_use_receipts`, and `memory_use_receipt_events`.
 - `contest` appends an event but does not rewrite stored claim text.

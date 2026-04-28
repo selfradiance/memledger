@@ -713,7 +713,7 @@ function resolveDatabasePath(raw: string | boolean | undefined): string {
 
 function usageText(): string {
   return [
-    "MemLedger v0.3",
+    "MemLedger v0.4",
     "",
     "Usage:",
     "  memledger add --subject <text> --predicate <text> --object <text> --author <id> --session <id> --trigger <task_completion|correction|assumption|inference> --confidence <0..1> [--project <project>] [--type <type>] [--db <path>]",

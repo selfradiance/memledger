@@ -1,6 +1,6 @@
 {
   "name": "memledger",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Append-only CLI ledger for structured memory claims, context packs, and memory-use receipts.",
   "private": true,
   "type": "module",
